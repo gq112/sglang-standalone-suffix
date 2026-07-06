@@ -864,7 +864,9 @@ class Scheduler(
                 token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
                 draft_token_to_kv_pool=(
                     None
-                    if self.draft_worker is None or self.spec_algorithm.is_ngram()
+                    if self.draft_worker is None
+                    or self.spec_algorithm.is_ngram()
+                    or self.spec_algorithm.is_suffix()
                     else self.draft_worker.model_runner.token_to_kv_pool
                 ),
                 req_to_metadata_buffer_idx_allocator=self.req_to_metadata_buffer_idx_allocator,
@@ -901,7 +903,9 @@ class Scheduler(
                 token_to_kv_pool=self.token_to_kv_pool_allocator.get_kvcache(),
                 draft_token_to_kv_pool=(
                     None
-                    if self.draft_worker is None or self.spec_algorithm.is_ngram()
+                    if self.draft_worker is None
+                    or self.spec_algorithm.is_ngram()
+                    or self.spec_algorithm.is_suffix()
                     else self.draft_worker.model_runner.token_to_kv_pool
                 ),
                 req_to_metadata_buffer_idx_allocator=self.req_to_metadata_buffer_idx_allocator,
@@ -1662,8 +1666,27 @@ class Scheduler(
                 if self.running_batch.is_empty():
                     self.running_batch = self.last_batch
                 else:
-                    # Merge running_batch with prefill batch
-                    self.running_batch.merge_batch(self.last_batch)
+                    # Guard against incompatible hidden sizes (e.g., target 8192 vs draft 1024)
+                    def _hidden_size_of(batch_obj):
+                        try:
+                            hs = getattr(batch_obj.spec_info, "hidden_states", None)
+                            if hs is None:
+                                return None
+                            return int(hs.shape[-1]) if hs.numel() > 0 else None
+                        except Exception:
+                            return None
+
+                    hs_running = _hidden_size_of(self.running_batch)
+                    hs_last = _hidden_size_of(self.last_batch)
+                    if hs_running is None or hs_last is None or hs_running == hs_last:
+                        # Merge running_batch with prefill batch
+                        self.running_batch.merge_batch(self.last_batch)
+                    else:
+                        logger.warning(
+                            "Skip merging incompatible batches: hidden_size %s vs %s",
+                            hs_running,
+                            hs_last,
+                        )
 
         new_batch = self.get_new_batch_prefill()
 
@@ -2052,6 +2075,11 @@ class Scheduler(
             batch_result.extend_logprob_start_len_per_req = (
                 extend_logprob_start_len_per_req
             )
+            # Capture suffix status for centralized logging
+            try:
+                self.last_suffix_status = getattr(batch_result, "suffix_status", None)
+            except Exception:
+                self.last_suffix_status = None
             ret = batch_result
         else:  # embedding or reward model
             model_worker_batch = batch.get_model_worker_batch()

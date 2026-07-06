@@ -40,6 +40,9 @@ from sglang.srt.speculative.eagle_utils import (
     organize_draft_results,
 )
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from sglang.srt.speculative.suffix_proposer import (
+    SuffixDecodingProposer,
+)
 from sglang.srt.speculative.spec_utils import (
     assign_draft_cache_locs,
     detect_nan,
@@ -88,10 +91,16 @@ class EAGLEWorker(TpModelWorker):
         self.gpu_id = gpu_id
         self.device = server_args.device
         self.target_worker = target_worker
+        self.tp_rank = tp_rank
         self.page_size = server_args.page_size
         self.speculative_algorithm = SpeculativeAlgorithm.from_string(
             server_args.speculative_algorithm
         )
+        self._suffix_proposer: Optional[SuffixDecodingProposer] = None
+        self._last_suffix_status: Optional[str] = None
+
+        if server_args.speculative_suffix_enable:
+            self._init_suffix_proposer(target_worker)
 
         # Override the context length of the draft model to be the same as the target model.
         server_args.context_length = target_worker.model_runner.model_config.context_len
@@ -258,6 +267,11 @@ class EAGLEWorker(TpModelWorker):
             A tuple of the final logit output of the target model, next tokens accepted,
             the batch id (used for overlap schedule), and number of accepted tokens.
         """
+        # reset per-batch suffix status
+        self._last_suffix_status = None
+        if self._suffix_proposer:
+            self._suffix_prepare_batch(batch)
+
         if batch.forward_mode.is_extend() or batch.is_extend_in_batch:
             logits_output, next_token_ids, seq_lens_cpu = self.forward_target_extend(
                 batch
@@ -268,6 +282,8 @@ class EAGLEWorker(TpModelWorker):
                 self.forward_draft_extend(
                     batch, logits_output.hidden_states, next_token_ids, seq_lens_cpu
                 )
+            if self._suffix_proposer:
+                self._suffix_update_after_extend(batch, next_token_ids)
             return GenerationBatchResult(
                 logits_output=logits_output,
                 next_token_ids=next_token_ids,
@@ -282,6 +298,9 @@ class EAGLEWorker(TpModelWorker):
             logits_output, verify_output, model_worker_batch, can_run_cuda_graph = (
                 self.verify(batch, spec_info)
             )
+
+            if self._suffix_proposer:
+                self._suffix_update_after_verify(batch, verify_output)
 
             with self.draft_tp_context(
                 self.draft_model_runner.tp_group
@@ -300,6 +319,7 @@ class EAGLEWorker(TpModelWorker):
                 next_token_ids=verify_output.verified_id,
                 num_accepted_tokens=sum(verify_output.accept_length_per_req_cpu),
                 can_run_cuda_graph=can_run_cuda_graph,
+                suffix_status=self._last_suffix_status,
             )
 
     def check_forward_draft_extend_after_decode(self, batch: ScheduleBatch):
@@ -319,6 +339,151 @@ class EAGLEWorker(TpModelWorker):
         global_need_forward_cnt = global_need_forward[0].item()
         need_forward = global_need_forward_cnt > 0
         return need_forward
+
+    # ------------------------------------------------------------------ #
+    # Suffix decoding helpers
+    # ------------------------------------------------------------------ #
+    def _init_suffix_proposer(self, target_worker: TpModelWorker) -> None:
+        if self.topk != 1:
+            logger.warning(
+                "Suffix decoding currently supports only topk=1. "
+                "Detected speculative_eagle_topk=%s, disabling suffix.",
+                self.topk,
+            )
+            self._suffix_proposer = None
+            return
+        max_model_len = getattr(
+            target_worker.model_runner.model_config, "max_model_len", None
+        )
+        if max_model_len is None:
+            max_model_len = getattr(
+                target_worker.model_runner.model_config, "context_len", None
+            )
+        if max_model_len is None:
+            logger.warning(
+                "Suffix decoding disabled: unable to determine model context length."
+            )
+            return
+        try:
+            self._suffix_proposer = SuffixDecodingProposer(
+                self.server_args,
+                max_model_len=max_model_len,
+            )
+        except Exception as exc:  # pragma: no cover - dependency optional
+            logger.warning("Suffix decoding disabled: %s", exc)
+            self._suffix_proposer = None
+
+    def _suffix_prepare_batch(self, batch: ScheduleBatch) -> None:
+        if not self._suffix_proposer:
+            return
+        if self.topk != 1:
+            return
+        try:
+            self._suffix_proposer.ensure_prompts_started(batch)
+        except Exception as exc:
+            logger.warning("Suffix proposer preparation failed: %s", exc)
+            self._suffix_proposer = None
+
+    def _suffix_update_after_verify(
+        self, batch: ScheduleBatch, verify_output: "EagleVerifyOutput"
+    ) -> None:
+        if not self._suffix_proposer:
+            return
+        try:
+            accept_lengths = verify_output.accept_length_per_req_cpu
+            accepted_tokens = verify_output.verified_id
+            token_buffer: List[int]
+            if isinstance(accepted_tokens, torch.Tensor):
+                token_buffer = accepted_tokens.cpu().tolist()
+            else:
+                token_buffer = list(accepted_tokens)
+            cursor = 0
+            for req, accepted_len in zip(batch.reqs, accept_lengths):
+                token_count = int(accepted_len) + 1
+                if token_count <= 0:
+                    continue
+                tokens = token_buffer[cursor : cursor + token_count]
+                cursor += token_count
+                self._suffix_proposer.add_accepted_tokens(req.rid, tokens)
+            self._suffix_proposer.stop_inactive_requests(
+                req.rid for req in batch.reqs
+            )
+        except Exception as exc:
+            logger.warning("Suffix proposer update failed: %s", exc)
+            self._suffix_proposer = None
+
+    def _suffix_update_after_extend(
+        self, batch: ScheduleBatch, next_token_ids: torch.Tensor
+    ) -> None:
+        if not self._suffix_proposer:
+            return
+        try:
+            if isinstance(next_token_ids, torch.Tensor):
+                token_buffer = next_token_ids.detach().view(-1).cpu().tolist()
+            else:
+                token_buffer = list(next_token_ids)
+            for req, token_id in zip(batch.reqs, token_buffer):
+                self._suffix_proposer.add_accepted_tokens(req.rid, [int(token_id)])
+            self._suffix_proposer.stop_inactive_requests(
+                req.rid for req in batch.reqs
+            )
+        except Exception as exc:
+            logger.warning("Suffix proposer extend update failed: %s", exc)
+            self._suffix_proposer = None
+
+    def _apply_suffix_overrides(
+        self,
+        batch: ScheduleBatch,
+        parent_list: torch.Tensor,
+        top_scores_index: torch.Tensor,
+        draft_tokens: torch.Tensor,
+    ) -> None:
+        if not self._suffix_proposer:
+            return
+        try:
+            proposals = self._suffix_proposer.propose(batch)
+        except Exception as exc:
+            logger.warning("Suffix proposer failed: %s", exc)
+            self._suffix_proposer = None
+            return
+        if not proposals:
+            return
+        max_slots = draft_tokens.size(1)
+        if max_slots <= 0:
+            return
+        threshold = max_slots
+        applied = 0
+        for idx, proposal in enumerate(proposals):
+            if idx >= draft_tokens.size(0):
+                break
+            if proposal is None or proposal.score < threshold:
+                continue
+            tokens = proposal.token_ids[:max_slots]
+            if len(tokens) < max_slots:
+                continue
+            applied += 1
+            device = draft_tokens.device
+            row = draft_tokens[idx]
+            torch_tokens = torch.tensor(
+                tokens,
+                dtype=row.dtype,
+                device=device,
+            )
+            row[: torch_tokens.numel()] = torch_tokens
+            if parent_list.numel() > 0:
+                parent_list[idx] = torch.arange(
+                    parent_list.size(1),
+                    dtype=parent_list.dtype,
+                    device=parent_list.device,
+                ) - 1
+            seq_range = torch.arange(
+                top_scores_index.size(1),
+                dtype=top_scores_index.dtype,
+                device=top_scores_index.device,
+            )
+            top_scores_index[idx] = seq_range
+        if applied > 0:
+            self._last_suffix_status = f"override x{applied}/{len(proposals)}"
 
     def forward_target_extend(
         self, batch: ScheduleBatch
@@ -522,6 +687,13 @@ class EAGLEWorker(TpModelWorker):
                 self.speculative_num_draft_tokens,
             )
 
+        self._apply_suffix_overrides(
+            batch,
+            parent_list,
+            top_scores_index,
+            draft_tokens,
+        )
+
         (
             tree_mask,
             position,
@@ -602,7 +774,7 @@ class EAGLEWorker(TpModelWorker):
             # speculative decoding and the draft model architecture is gpt-oss. gpt-oss
             # rope kernel needs cache_loc to be contiguous.
             if (
-                self.server_args.speculative_algorithm == "STANDALONE"
+                self.server_args.speculative_algorithm in ("STANDALONE", "SUFFIX")
                 and self.model_config.hf_config.architectures[0] == "GptOssForCausalLM"
             ):
                 out_cache_loc = out_cache_loc.contiguous()

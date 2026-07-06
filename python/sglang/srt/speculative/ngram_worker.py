@@ -10,7 +10,6 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.managers.tp_worker import TpModelWorker
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.server_args import ServerArgs
-from sglang.srt.speculative.cpp_ngram.ngram_cache import NgramCache
 from sglang.srt.speculative.ngram_info import NgramVerifyInput
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
@@ -39,13 +38,19 @@ class NGRAMWorker:
         self.max_match_window_size: int = (
             server_args.speculative_ngram_max_match_window_size
         )
+        self.spec_algorithm = SpeculativeAlgorithm.NGRAM
 
         self.max_batch_size = target_worker.max_running_requests
         self.device = f"cuda:{gpu_id}" if gpu_id >= 0 else "cuda"
 
         self._init_preallocated_tensors()
 
-        self.ngram_cache = NgramCache(
+        self.ngram_cache = self._init_ngram_cache(server_args)
+
+    def _init_ngram_cache(self, server_args: ServerArgs):
+        from sglang.srt.speculative.cpp_ngram.ngram_cache import NgramCache
+
+        return NgramCache(
             min_match_window_size=server_args.speculative_ngram_min_match_window_size,
             max_match_window_size=server_args.speculative_ngram_max_match_window_size,
             min_bfs_breadth=server_args.speculative_ngram_min_bfs_breadth,
@@ -181,7 +186,7 @@ class NGRAMWorker:
                 tree_mask.append(req_mask.flatten())
             tree_mask = torch.cat(tree_mask, dim=0)
 
-        batch.spec_algorithm = SpeculativeAlgorithm.NGRAM
+        batch.spec_algorithm = self.spec_algorithm
         batch.forward_mode = ForwardMode.TARGET_VERIFY
         batch.spec_info = NgramVerifyInput(
             draft_tokens,

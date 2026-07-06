@@ -50,6 +50,7 @@ class SpeculativeRegistryTests(unittest.TestCase):
                 "is_eagle3": False,
                 "is_standalone": False,
                 "is_ngram": False,
+                "is_suffix": False,
                 "has_factory": False,
             },
             "EAGLE": {
@@ -58,6 +59,7 @@ class SpeculativeRegistryTests(unittest.TestCase):
                 "is_eagle3": False,
                 "is_standalone": False,
                 "is_ngram": False,
+                "is_suffix": False,
                 "has_factory": True,
             },
             "EAGLE3": {
@@ -66,6 +68,7 @@ class SpeculativeRegistryTests(unittest.TestCase):
                 "is_eagle3": True,
                 "is_standalone": False,
                 "is_ngram": False,
+                "is_suffix": False,
                 "has_factory": True,
             },
             "STANDALONE": {
@@ -74,6 +77,16 @@ class SpeculativeRegistryTests(unittest.TestCase):
                 "is_eagle3": False,
                 "is_standalone": True,
                 "is_ngram": False,
+                "is_suffix": False,
+                "has_factory": True,
+            },
+            "SUFFIX": {
+                "is_none": False,
+                "is_eagle": False,
+                "is_eagle3": False,
+                "is_standalone": False,
+                "is_ngram": False,
+                "is_suffix": True,
                 "has_factory": True,
             },
             "NGRAM": {
@@ -82,6 +95,7 @@ class SpeculativeRegistryTests(unittest.TestCase):
                 "is_eagle3": False,
                 "is_standalone": False,
                 "is_ngram": True,
+                "is_suffix": False,
                 "has_factory": True,
             },
         }
@@ -95,6 +109,7 @@ class SpeculativeRegistryTests(unittest.TestCase):
                 self.assertEqual(algo.is_eagle3(), expectations["is_eagle3"])
                 self.assertEqual(algo.is_standalone(), expectations["is_standalone"])
                 self.assertEqual(algo.is_ngram(), expectations["is_ngram"])
+                self.assertEqual(algo.is_suffix(), expectations["is_suffix"])
 
                 has_factory = algo._draft_worker_factory is not None
                 self.assertEqual(has_factory, expectations["has_factory"])
@@ -104,7 +119,7 @@ class SpeculativeRegistryTests(unittest.TestCase):
 
     def test_iteration_returns_registration_order(self):
         names = [algo.name for algo in SpeculativeAlgorithm._registration_order]
-        for required in ["NONE", "EAGLE", "EAGLE3", "STANDALONE", "NGRAM"]:
+        for required in ["NONE", "EAGLE", "EAGLE3", "STANDALONE", "SUFFIX", "NGRAM"]:
             self.assertIn(required, names)
 
     def test_create_draft_worker_returns_none_for_none_algorithm(self):

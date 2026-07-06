@@ -44,6 +44,12 @@ class StandaloneWorker(EAGLEWorker):
             server_args.speculative_algorithm
         )
 
+        # Standalone implements its own __init__, so initialize the suffix
+        # proposer explicitly instead of relying on EAGLEWorker.__init__.
+        self._suffix_proposer = None
+        if server_args.speculative_suffix_enable:
+            self._init_suffix_proposer(target_worker)
+
         # Override the context length of the draft model to be the same as the target model.
         server_args.context_length = target_worker.model_runner.model_config.context_len
 

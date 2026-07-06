@@ -267,6 +267,7 @@ class CudaGraphRunner:
             model_runner.spec_algorithm.is_eagle()
             or model_runner.spec_algorithm.is_standalone()
             or model_runner.spec_algorithm.is_ngram()
+            or model_runner.spec_algorithm.is_suffix()
         ):
             if self.model_runner.is_draft_worker:
                 raise RuntimeError("This should not happen")
@@ -438,6 +439,7 @@ class CudaGraphRunner:
                 == forward_batch.input_ids.numel()
             )
             if self.model_runner.spec_algorithm.is_ngram()
+            or self.model_runner.spec_algorithm.is_suffix()
             else True
         )
 
@@ -882,7 +884,10 @@ class CudaGraphRunner:
                     seq_lens_cpu=None,
                 )
 
-        elif self.model_runner.spec_algorithm.is_ngram():
+        elif (
+            self.model_runner.spec_algorithm.is_ngram()
+            or self.model_runner.spec_algorithm.is_suffix()
+        ):
             from sglang.srt.speculative.ngram_info import NgramVerifyInput
 
             spec_info = NgramVerifyInput(

@@ -380,6 +380,13 @@ class ServerArgs:
     speculative_token_map: Optional[str] = None
     speculative_attention_mode: str = "prefill"
     speculative_moe_runner_backend: Optional[str] = None
+    speculative_suffix_enable: bool = False
+    speculative_suffix_cache_max_depth: int = 64
+    speculative_suffix_cache_max_requests: int = 256
+    speculative_suffix_max_spec_factor: float = 1.0
+    speculative_suffix_max_spec_offset: float = 0.0
+    speculative_suffix_min_token_prob: float = 0.1
+    speculative_suffix_max_spec_tokens: Optional[int] = None
     # For ngram only
     speculative_ngram_min_match_window_size: int = 1
     speculative_ngram_max_match_window_size: int = 12
@@ -812,7 +819,7 @@ class ServerArgs:
                 if self.speculative_algorithm == "STANDALONE":
                     # standalonedraft model and cuda graphs
                     reserved_mem += 6 * 1024
-                elif self.speculative_algorithm != "NGRAM":
+                elif self.speculative_algorithm not in ("NGRAM", "SUFFIX"):
                     # eagle draft models and cuda graphs
                     reserved_mem += 2 * 1024
 
@@ -1598,6 +1605,15 @@ class ServerArgs:
                     )
 
             if (
+                self.speculative_suffix_enable
+                and self.speculative_eagle_topk is not None
+                and self.speculative_eagle_topk > 1
+            ):
+                raise ValueError(
+                    "Suffix speculative decoding currently supports only --speculative-eagle-topk=1."
+                )
+
+            if (
                 self.speculative_eagle_topk == 1
                 and self.speculative_num_draft_tokens != self.speculative_num_steps + 1
             ):
@@ -1615,7 +1631,41 @@ class ServerArgs:
                     "speculative_eagle_topk > 1 with page_size > 1 is unstable and produces incorrect results for paged attention backends. This combination is only supported for the 'flashinfer' backend."
                 )
 
-        if self.speculative_algorithm == "NGRAM":
+        elif self.speculative_algorithm == "SUFFIX":
+            self.speculative_suffix_enable = True
+
+            if not self.device.startswith("cuda"):
+                raise ValueError(
+                    "Suffix speculative decoding only supports CUDA device."
+                )
+
+            if self.enable_dp_attention:
+                # TODO: support dp attention for suffix speculative decoding
+                raise ValueError(
+                    "Currently suffix speculative decoding does not support dp attention."
+                )
+
+            if self.max_running_requests is None:
+                self.max_running_requests = 48
+                logger.warning(
+                    "Max running requests is reset to 48 for speculative decoding. You can override this by explicitly setting --max-running-requests."
+                )
+
+            self.disable_overlap_schedule = True
+            self.enable_mixed_chunk = False
+            self.speculative_eagle_topk = 1
+            if self.speculative_num_draft_tokens is None:
+                max_spec_tokens = self.speculative_suffix_max_spec_tokens
+                if max_spec_tokens is None:
+                    max_spec_tokens = self.speculative_suffix_cache_max_depth
+                self.speculative_num_draft_tokens = max(2, int(max_spec_tokens) + 1)
+
+            logger.warning(
+                "The overlap scheduler and mixed chunked prefill are disabled because of "
+                "using suffix speculative decoding."
+            )
+
+        elif self.speculative_algorithm == "NGRAM":
             if not self.device.startswith("cuda"):
                 raise ValueError(
                     "Ngram speculative decoding only supports CUDA device."
@@ -1655,6 +1705,10 @@ class ServerArgs:
                 raise ValueError(
                     "Currently ngram speculative decoding does not support dp attention."
                 )
+        elif self.speculative_suffix_enable:
+            raise ValueError(
+                "Suffix speculative decoding is only supported with the EAGLE/EAGLE3/STANDALONE algorithms, or by setting --speculative-algorithm SUFFIX."
+            )
 
     def _handle_load_format(self):
         if (
@@ -2700,7 +2754,7 @@ class ServerArgs:
         parser.add_argument(
             "--speculative-algorithm",
             type=str,
-            choices=["EAGLE", "EAGLE3", "NEXTN", "STANDALONE", "NGRAM"],
+            choices=["EAGLE", "EAGLE3", "NEXTN", "STANDALONE", "SUFFIX", "NGRAM"],
             help="Speculative algorithm.",
         )
         parser.add_argument(
@@ -2775,6 +2829,48 @@ class ServerArgs:
             choices=MOE_RUNNER_BACKEND_CHOICES,
             default=ServerArgs.speculative_moe_runner_backend,
             help="Choose the runner backend for MoE in speculative decoding.",
+        )
+        parser.add_argument(
+            "--speculative-suffix-enable",
+            action="store_true",
+            default=ServerArgs.speculative_suffix_enable,
+            help="Enable suffix decoding assistance (requires speculative-eagle-topk=1).",
+        )
+        parser.add_argument(
+            "--speculative-suffix-cache-max-depth",
+            type=int,
+            default=ServerArgs.speculative_suffix_cache_max_depth,
+            help="Maximum suffix-tree depth for suffix decoding.",
+        )
+        parser.add_argument(
+            "--speculative-suffix-cache-max-requests",
+            type=int,
+            default=ServerArgs.speculative_suffix_cache_max_requests,
+            help="Maximum number of cached requests in the global suffix cache (-1 for unlimited).",
+        )
+        parser.add_argument(
+            "--speculative-suffix-max-spec-factor",
+            type=float,
+            default=ServerArgs.speculative_suffix_max_spec_factor,
+            help="Factor controlling suffix speculation length relative to match size.",
+        )
+        parser.add_argument(
+            "--speculative-suffix-max-spec-offset",
+            type=float,
+            default=ServerArgs.speculative_suffix_max_spec_offset,
+            help="Offset controlling suffix speculation length relative to match size.",
+        )
+        parser.add_argument(
+            "--speculative-suffix-min-token-prob",
+            type=float,
+            default=ServerArgs.speculative_suffix_min_token_prob,
+            help="Minimum probability threshold for suffix draft tokens.",
+        )
+        parser.add_argument(
+            "--speculative-suffix-max-spec-tokens",
+            type=int,
+            default=ServerArgs.speculative_suffix_max_spec_tokens,
+            help="Optional hard cap on suffix draft length (overrides heuristic).",
         )
         # Ngram speculative decoding
         parser.add_argument(
