@@ -387,6 +387,12 @@ class ServerArgs:
     speculative_suffix_max_spec_offset: float = 0.0
     speculative_suffix_min_token_prob: float = 0.1
     speculative_suffix_max_spec_tokens: Optional[int] = None
+    speculative_dynamic_k_enable: bool = False
+    speculative_normal_draft_token_num: int = 4
+    speculative_long_suffix_draft_token_num: int = 8
+    speculative_long_suffix_min_match_len: int = 7
+    speculative_long_suffix_max_bs: int = 8
+    speculative_high_bs_threshold: int = 10
     # For ngram only
     speculative_ngram_min_match_window_size: int = 1
     speculative_ngram_max_match_window_size: int = 12
@@ -1611,6 +1617,37 @@ class ServerArgs:
             ):
                 raise ValueError(
                     "Suffix speculative decoding currently supports only --speculative-eagle-topk=1."
+                )
+
+            if self.speculative_dynamic_k_enable:
+                if not self.speculative_suffix_enable:
+                    raise ValueError(
+                        "--speculative-dynamic-k-enable requires --speculative-suffix-enable."
+                    )
+                if self.speculative_normal_draft_token_num < 2:
+                    raise ValueError(
+                        "--speculative-normal-draft-token-num must be at least 2."
+                    )
+                if self.speculative_long_suffix_draft_token_num < (
+                    self.speculative_normal_draft_token_num
+                ):
+                    raise ValueError(
+                        "--speculative-long-suffix-draft-token-num must be >= --speculative-normal-draft-token-num."
+                    )
+                if self.speculative_eagle_topk != 1:
+                    raise ValueError(
+                        "Dynamic-K standalone+suffix decoding requires --speculative-eagle-topk=1."
+                    )
+                if self.enable_dp_attention:
+                    raise ValueError(
+                        "Dynamic-K standalone+suffix decoding does not support DP attention."
+                    )
+                self.disable_overlap_schedule = True
+                self.speculative_num_steps = (
+                    self.speculative_normal_draft_token_num - 1
+                )
+                self.speculative_num_draft_tokens = (
+                    self.speculative_normal_draft_token_num
                 )
 
             if (
@@ -2871,6 +2908,42 @@ class ServerArgs:
             type=int,
             default=ServerArgs.speculative_suffix_max_spec_tokens,
             help="Optional hard cap on suffix draft length (overrides heuristic).",
+        )
+        parser.add_argument(
+            "--speculative-dynamic-k-enable",
+            action="store_true",
+            default=ServerArgs.speculative_dynamic_k_enable,
+            help="Enable req-level dynamic verify width for standalone+suffix decoding.",
+        )
+        parser.add_argument(
+            "--speculative-normal-draft-token-num",
+            type=int,
+            default=ServerArgs.speculative_normal_draft_token_num,
+            help="Verify width for normal standalone/suffix-short requests, including the root token.",
+        )
+        parser.add_argument(
+            "--speculative-long-suffix-draft-token-num",
+            type=int,
+            default=ServerArgs.speculative_long_suffix_draft_token_num,
+            help="Verify width for low-batch long suffix hits, including the root token.",
+        )
+        parser.add_argument(
+            "--speculative-long-suffix-min-match-len",
+            type=int,
+            default=ServerArgs.speculative_long_suffix_min_match_len,
+            help="Minimum suffix proposal match length required to use the long suffix verify width.",
+        )
+        parser.add_argument(
+            "--speculative-long-suffix-max-bs",
+            type=int,
+            default=ServerArgs.speculative_long_suffix_max_bs,
+            help="Maximum long-suffix sub-batch size allowed to use the long suffix verify width.",
+        )
+        parser.add_argument(
+            "--speculative-high-bs-threshold",
+            type=int,
+            default=ServerArgs.speculative_high_bs_threshold,
+            help="Running batch size threshold at which dynamic-K falls back to the normal verify width.",
         )
         # Ngram speculative decoding
         parser.add_argument(

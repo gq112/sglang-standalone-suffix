@@ -263,6 +263,7 @@ class CudaGraphRunner:
         self.capture_forward_mode = ForwardMode.DECODE
         self.capture_hidden_mode = CaptureHiddenMode.NULL
         self.num_tokens_per_bs = 1
+        self.capture_num_tokens_per_bs_values = [1]
         if (
             model_runner.spec_algorithm.is_eagle()
             or model_runner.spec_algorithm.is_standalone()
@@ -273,9 +274,30 @@ class CudaGraphRunner:
                 raise RuntimeError("This should not happen")
             else:
                 self.capture_forward_mode = ForwardMode.TARGET_VERIFY
-                self.num_tokens_per_bs = (
-                    self.model_runner.server_args.speculative_num_draft_tokens
-                )
+                if (
+                    model_runner.server_args.speculative_dynamic_k_enable
+                    and model_runner.server_args.speculative_suffix_enable
+                    and (
+                        model_runner.spec_algorithm.is_eagle()
+                        or model_runner.spec_algorithm.is_standalone()
+                    )
+                ):
+                    self.capture_num_tokens_per_bs_values = sorted(
+                        set(
+                            [
+                                model_runner.server_args.speculative_normal_draft_token_num,
+                                model_runner.server_args.speculative_long_suffix_draft_token_num,
+                            ]
+                        )
+                    )
+                    self.num_tokens_per_bs = max(
+                        self.capture_num_tokens_per_bs_values
+                    )
+                else:
+                    self.num_tokens_per_bs = (
+                        self.model_runner.server_args.speculative_num_draft_tokens
+                    )
+                    self.capture_num_tokens_per_bs_values = [self.num_tokens_per_bs]
 
         # If returning hidden states is enabled, set initial capture hidden mode to full to avoid double-capture on startup
         if model_runner.server_args.enable_return_hidden_states:
@@ -388,10 +410,21 @@ class CudaGraphRunner:
     def _cache_loc_dtype(self):
         return torch.int64
 
+    def _get_num_tokens_per_bs(self, forward_batch: ForwardBatch) -> int:
+        spec_info = getattr(forward_batch, "spec_info", None)
+        draft_token_num = getattr(spec_info, "draft_token_num", None)
+        if forward_batch.forward_mode.is_target_verify() and draft_token_num is not None:
+            return int(draft_token_num)
+        return self.num_tokens_per_bs
+
     def can_run(self, forward_batch: ForwardBatch):
+        num_tokens_per_bs = self._get_num_tokens_per_bs(forward_batch)
+        if num_tokens_per_bs not in self.capture_num_tokens_per_bs_values:
+            return False
+
         if self.require_mlp_tp_gather:
             cuda_graph_bs = (
-                max(forward_batch.global_num_tokens_cpu) // self.num_tokens_per_bs
+                max(forward_batch.global_num_tokens_cpu) // num_tokens_per_bs
                 if self.model_runner.spec_algorithm.is_eagle()
                 else max(forward_batch.global_num_tokens_cpu)
             )
@@ -399,10 +432,12 @@ class CudaGraphRunner:
             cuda_graph_bs = forward_batch.batch_size
 
         is_bs_supported = (
-            cuda_graph_bs in self.graphs
+            (num_tokens_per_bs, cuda_graph_bs) in self.graphs
             if self.disable_padding
             else cuda_graph_bs <= self.max_bs
         )
+        if not self.disable_padding and (num_tokens_per_bs, self.capture_bs[-1]) not in self.graphs:
+            return False
 
         if self.require_mlp_sync:
             is_bs_supported = is_bs_supported and forward_batch.can_run_dp_cuda_graph
@@ -435,11 +470,13 @@ class CudaGraphRunner:
 
         is_ngram_supported = (
             (
-                forward_batch.batch_size * self.num_tokens_per_bs
+                forward_batch.batch_size * num_tokens_per_bs
                 == forward_batch.input_ids.numel()
             )
             if self.model_runner.spec_algorithm.is_ngram()
             or self.model_runner.spec_algorithm.is_suffix()
+            or self.model_runner.spec_algorithm.is_eagle()
+            or self.model_runner.spec_algorithm.is_standalone()
             else True
         )
 
@@ -480,31 +517,35 @@ class CudaGraphRunner:
                     else reversed(self.capture_bs)
                 )
                 for i, bs in enumerate(capture_range):
-                    if get_tensor_model_parallel_rank() == 0:
-                        avail_mem = get_available_gpu_memory(
-                            self.model_runner.device,
-                            self.model_runner.gpu_id,
-                            empty_cache=False,
-                        )
-                        capture_range.set_description(
-                            f"Capturing batches ({bs=} {avail_mem=:.2f} GB)"
-                        )
+                    for num_tokens_per_bs in self.capture_num_tokens_per_bs_values:
+                        self.current_capture_num_tokens_per_bs = num_tokens_per_bs
+                        if get_tensor_model_parallel_rank() == 0:
+                            avail_mem = get_available_gpu_memory(
+                                self.model_runner.device,
+                                self.model_runner.gpu_id,
+                                empty_cache=False,
+                            )
+                            capture_range.set_description(
+                                f"Capturing batches ({bs=} {num_tokens_per_bs=} {avail_mem=:.2f} GB)"
+                            )
 
-                    with patch_model(
-                        self.model_runner.model,
-                        bs in self.compile_bs,
-                        num_tokens=bs * self.num_tokens_per_bs,
-                        tp_group=self.model_runner.tp_group,
-                    ) as forward:
-                        (
-                            graph,
-                            output_buffers,
-                        ) = self.capture_one_batch_size(bs, forward)
-                        self.graphs[bs] = graph
-                        self.output_buffers[bs] = output_buffers
+                        with patch_model(
+                            self.model_runner.model,
+                            bs in self.compile_bs,
+                            num_tokens=bs * num_tokens_per_bs,
+                            tp_group=self.model_runner.tp_group,
+                        ) as forward:
+                            (
+                                graph,
+                                output_buffers,
+                            ) = self.capture_one_batch_size(bs, forward)
+                            self.graphs[(num_tokens_per_bs, bs)] = graph
+                            self.output_buffers[(num_tokens_per_bs, bs)] = (
+                                output_buffers
+                            )
 
-                    # Save gemlite cache after each capture
-                    save_gemlite_cache()
+                        # Save gemlite cache after each capture
+                        save_gemlite_cache()
 
         if self.enable_profile_cuda_graph:
             torch.cuda.memory._dump_snapshot(f"cuda_graph_runner_memory_usage.pickle")
@@ -542,7 +583,10 @@ class CudaGraphRunner:
     def capture_one_batch_size(self, bs: int, forward: Callable):
         graph = self._create_device_graph()
         stream = self.stream
-        num_tokens = bs * self.num_tokens_per_bs
+        num_tokens_per_bs = getattr(
+            self, "current_capture_num_tokens_per_bs", self.num_tokens_per_bs
+        )
+        num_tokens = bs * num_tokens_per_bs
 
         # Graph inputs
         input_ids = self.input_ids[:num_tokens]
@@ -600,7 +644,7 @@ class CudaGraphRunner:
         else:
             global_dp_buffer_len = None
 
-        spec_info = self.get_spec_info(num_tokens)
+        spec_info = self.get_spec_info(num_tokens, num_tokens_per_bs)
         if self.capture_hidden_mode != CaptureHiddenMode.FULL:
             self.capture_hidden_mode = (
                 spec_info.capture_hidden_mode if spec_info else CaptureHiddenMode.NULL
@@ -743,13 +787,14 @@ class CudaGraphRunner:
         self.recapture_if_needed(forward_batch)
 
         raw_bs = forward_batch.batch_size
-        raw_num_token = raw_bs * self.num_tokens_per_bs
+        num_tokens_per_bs = self._get_num_tokens_per_bs(forward_batch)
+        raw_num_token = raw_bs * num_tokens_per_bs
 
         # Pad
         if self.require_mlp_tp_gather:
             max_num_tokens = max(forward_batch.global_num_tokens_cpu)
             max_batch_size = (
-                max_num_tokens / self.num_tokens_per_bs
+                max_num_tokens / num_tokens_per_bs
                 if self.model_runner.spec_algorithm.is_eagle()
                 else max_num_tokens
             )
@@ -785,12 +830,12 @@ class CudaGraphRunner:
         if forward_batch.mrope_positions is not None:
             self.mrope_positions[:, :raw_num_token].copy_(forward_batch.mrope_positions)
         if self.require_gathered_buffer:
-            self.global_num_tokens_gpu.fill_(bs * self.num_tokens_per_bs)
-            self.global_num_tokens_for_logprob_gpu.fill_(bs * self.num_tokens_per_bs)
+            self.global_num_tokens_gpu.fill_(bs * num_tokens_per_bs)
+            self.global_num_tokens_for_logprob_gpu.fill_(bs * num_tokens_per_bs)
         if enable_num_token_non_padded(self.model_runner.server_args):
             num_token_non_padded = forward_batch.num_token_non_padded
             if self.require_gathered_buffer:
-                tokens_per_rank = bs // self.attn_tp_size * self.num_tokens_per_bs
+                tokens_per_rank = bs // self.attn_tp_size * num_tokens_per_bs
                 num_local_token_non_padded = torch.clamp(
                     num_token_non_padded - tokens_per_rank * self.attn_tp_rank,
                     min=0,
@@ -824,6 +869,7 @@ class CudaGraphRunner:
         self.raw_bs = raw_bs
         self.raw_num_token = raw_num_token
         self.bs = bs
+        self.replay_num_tokens_per_bs = num_tokens_per_bs
 
     def replay(
         self,
@@ -841,9 +887,10 @@ class CudaGraphRunner:
             self.positions[: self.raw_num_token].copy_(forward_batch.positions)
 
         # Replay
-        self.graphs[self.bs].replay()
+        graph_key = (self.replay_num_tokens_per_bs, self.bs)
+        self.graphs[graph_key].replay()
 
-        output = self.output_buffers[self.bs]
+        output = self.output_buffers[graph_key]
         if isinstance(output, LogitsProcessorOutput):
             return LogitsProcessorOutput(
                 next_token_logits=output.next_token_logits[: self.raw_num_token],
@@ -857,7 +904,9 @@ class CudaGraphRunner:
             assert isinstance(output, PPProxyTensors)
             return PPProxyTensors({k: v[: self.bs] for k, v in output.tensors.items()})
 
-    def get_spec_info(self, num_tokens: int):
+    def get_spec_info(self, num_tokens: int, num_tokens_per_bs: Optional[int] = None):
+        if num_tokens_per_bs is None:
+            num_tokens_per_bs = self.num_tokens_per_bs
         spec_info = None
         if (
             self.model_runner.spec_algorithm.is_eagle()
@@ -876,9 +925,9 @@ class CudaGraphRunner:
                     retrive_next_token=None,
                     retrive_next_sibling=None,
                     retrive_cum_len=None,
-                    spec_steps=self.model_runner.server_args.speculative_num_steps,
+                    spec_steps=num_tokens_per_bs - 1,
                     topk=self.model_runner.server_args.speculative_eagle_topk,
-                    draft_token_num=self.model_runner.server_args.speculative_num_draft_tokens,
+                    draft_token_num=num_tokens_per_bs,
                     capture_hidden_mode=CaptureHiddenMode.FULL,
                     seq_lens_sum=None,
                     seq_lens_cpu=None,
@@ -897,7 +946,7 @@ class CudaGraphRunner:
                 retrive_index=None,
                 retrive_next_token=None,
                 retrive_next_sibling=None,
-                draft_token_num=self.num_tokens_per_bs,
+                draft_token_num=num_tokens_per_bs,
             )
             spec_info.capture_hidden_mode = CaptureHiddenMode.NULL
 

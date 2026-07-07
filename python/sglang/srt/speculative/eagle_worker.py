@@ -1,6 +1,9 @@
 import logging
 import time
-from typing import List, Optional, Tuple
+import dataclasses
+import copy
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 
@@ -42,6 +45,7 @@ from sglang.srt.speculative.eagle_utils import (
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.speculative.suffix_proposer import (
     SuffixDecodingProposer,
+    SuffixProposal,
 )
 from sglang.srt.speculative.spec_utils import (
     assign_draft_cache_locs,
@@ -68,6 +72,14 @@ if is_cuda():
 
 logger = logging.getLogger(__name__)
 SGLANG_RETURN_ORIGINAL_LOGPROB = get_bool_env_var("SGLANG_RETURN_ORIGINAL_LOGPROB")
+
+
+@dataclass
+class DynamicKVerifyInput:
+    normal: Optional[EagleVerifyInput]
+    long_suffix: Optional[EagleVerifyInput]
+    normal_indices: List[int]
+    long_suffix_indices: List[int]
 
 
 class EAGLEWorker(TpModelWorker):
@@ -98,6 +110,23 @@ class EAGLEWorker(TpModelWorker):
         )
         self._suffix_proposer: Optional[SuffixDecodingProposer] = None
         self._last_suffix_status: Optional[str] = None
+        self._dynamic_k_enable = (
+            server_args.speculative_dynamic_k_enable
+            and server_args.speculative_suffix_enable
+        )
+        self._normal_draft_token_num = (
+            server_args.speculative_normal_draft_token_num
+            if self._dynamic_k_enable
+            else server_args.speculative_num_draft_tokens
+        )
+        self._long_suffix_draft_token_num = (
+            server_args.speculative_long_suffix_draft_token_num
+        )
+        self._long_suffix_min_match_len = (
+            server_args.speculative_long_suffix_min_match_len
+        )
+        self._long_suffix_max_bs = server_args.speculative_long_suffix_max_bs
+        self._high_bs_threshold = server_args.speculative_high_bs_threshold
 
         if server_args.speculative_suffix_enable:
             self._init_suffix_proposer(target_worker)
@@ -437,17 +466,21 @@ class EAGLEWorker(TpModelWorker):
         parent_list: torch.Tensor,
         top_scores_index: torch.Tensor,
         draft_tokens: torch.Tensor,
+        proposals: Optional[List[Optional[SuffixProposal]]] = None,
+        skip_indices: Optional[set[int]] = None,
     ) -> None:
         if not self._suffix_proposer:
             return
-        try:
-            proposals = self._suffix_proposer.propose(batch)
-        except Exception as exc:
-            logger.warning("Suffix proposer failed: %s", exc)
-            self._suffix_proposer = None
-            return
+        if proposals is None:
+            try:
+                proposals = self._suffix_proposer.propose(batch)
+            except Exception as exc:
+                logger.warning("Suffix proposer failed: %s", exc)
+                self._suffix_proposer = None
+                return
         if not proposals:
             return
+        skip_indices = skip_indices or set()
         max_slots = draft_tokens.size(1)
         if max_slots <= 0:
             return
@@ -456,6 +489,8 @@ class EAGLEWorker(TpModelWorker):
         for idx, proposal in enumerate(proposals):
             if idx >= draft_tokens.size(0):
                 break
+            if idx in skip_indices:
+                continue
             if proposal is None or proposal.score < threshold:
                 continue
             tokens = proposal.token_ids[:max_slots]
@@ -484,6 +519,331 @@ class EAGLEWorker(TpModelWorker):
             top_scores_index[idx] = seq_range
         if applied > 0:
             self._last_suffix_status = f"override x{applied}/{len(proposals)}"
+
+    def _get_suffix_proposals(
+        self, batch: ScheduleBatch
+    ) -> Optional[List[Optional[SuffixProposal]]]:
+        if not self._suffix_proposer:
+            return None
+        try:
+            return self._suffix_proposer.propose(batch)
+        except Exception as exc:
+            logger.warning("Suffix proposer failed: %s", exc)
+            self._suffix_proposer = None
+            return None
+
+    def _select_long_suffix_indices(
+        self,
+        batch: ScheduleBatch,
+        proposals: Optional[List[Optional[SuffixProposal]]],
+    ) -> List[int]:
+        if not self._dynamic_k_enable or not proposals:
+            return []
+        if batch.return_logprob or batch.has_grammar:
+            return []
+        if batch.sampling_info is not None and not batch.sampling_info.is_all_greedy:
+            return []
+        bs = batch.batch_size()
+        if bs >= self._high_bs_threshold:
+            return []
+
+        indices: List[int] = []
+        required_tokens = self._long_suffix_draft_token_num - 1
+        for idx, proposal in enumerate(proposals):
+            if proposal is None:
+                continue
+            if proposal.match_len < self._long_suffix_min_match_len:
+                continue
+            if proposal.score < required_tokens:
+                continue
+            if len(proposal.token_ids) < required_tokens:
+                continue
+            indices.append(idx)
+
+        if len(indices) > self._long_suffix_max_bs:
+            return []
+        return indices
+
+    def _build_linear_suffix_verify_input(
+        self,
+        batch: ScheduleBatch,
+        proposals: List[Optional[SuffixProposal]],
+        indices: List[int],
+        draft_token_num: int,
+    ) -> EagleVerifyInput:
+        device = batch.seq_lens.device
+        draft_slots = draft_token_num - 1
+        verified_id = batch.spec_info.verified_id[indices]
+        suffix_tokens = torch.empty(
+            (len(indices), draft_slots),
+            dtype=verified_id.dtype,
+            device=device,
+        )
+        for row, req_idx in enumerate(indices):
+            proposal = proposals[req_idx]
+            assert proposal is not None
+            suffix_tokens[row] = torch.tensor(
+                proposal.token_ids[:draft_slots],
+                dtype=verified_id.dtype,
+                device=device,
+            )
+
+        parent_list = (
+            torch.arange(draft_slots, dtype=torch.long, device=device)
+            .unsqueeze(0)
+            .repeat(len(indices), 1)
+            - 1
+        )
+        top_scores_index = (
+            torch.arange(draft_slots, dtype=torch.long, device=device)
+            .unsqueeze(0)
+            .repeat(len(indices), 1)
+        )
+        index_tensor = torch.tensor(indices, dtype=torch.long, device=device)
+        seq_lens = batch.seq_lens[index_tensor]
+        seq_lens_cpu = batch.seq_lens_cpu[indices]
+
+        (
+            tree_mask,
+            position,
+            retrive_index,
+            retrive_next_token,
+            retrive_next_sibling,
+            draft_tokens,
+        ) = build_tree_kernel_efficient(
+            verified_id,
+            parent_list,
+            top_scores_index,
+            suffix_tokens,
+            seq_lens,
+            seq_lens.sum().item(),
+            self.topk,
+            draft_slots,
+            draft_token_num,
+        )
+
+        return EagleVerifyInput(
+            draft_token=draft_tokens,
+            custom_mask=tree_mask,
+            positions=position,
+            retrive_index=retrive_index,
+            retrive_next_token=retrive_next_token,
+            retrive_next_sibling=retrive_next_sibling,
+            retrive_cum_len=None,
+            spec_steps=draft_slots,
+            topk=self.topk,
+            draft_token_num=draft_token_num,
+            capture_hidden_mode=CaptureHiddenMode.FULL,
+            seq_lens_sum=seq_lens.sum().item(),
+            seq_lens_cpu=seq_lens_cpu,
+        )
+
+    def _build_standalone_verify_input(
+        self,
+        batch: ScheduleBatch,
+        parent_list: torch.Tensor,
+        top_scores_index: torch.Tensor,
+        draft_tokens: torch.Tensor,
+        indices: List[int],
+        spec_steps: int,
+        draft_token_num: int,
+    ) -> EagleVerifyInput:
+        device = batch.seq_lens.device
+        index_tensor = torch.tensor(indices, dtype=torch.long, device=device)
+        verified_id = batch.spec_info.verified_id[index_tensor]
+        seq_lens = batch.seq_lens[index_tensor]
+        seq_lens_cpu = batch.seq_lens_cpu[indices]
+        (
+            tree_mask,
+            position,
+            retrive_index,
+            retrive_next_token,
+            retrive_next_sibling,
+            draft_tokens,
+        ) = build_tree_kernel_efficient(
+            verified_id,
+            parent_list[index_tensor],
+            top_scores_index[index_tensor],
+            draft_tokens[index_tensor],
+            seq_lens,
+            seq_lens.sum().item(),
+            self.topk,
+            spec_steps,
+            draft_token_num,
+        )
+
+        return EagleVerifyInput(
+            draft_token=draft_tokens,
+            custom_mask=tree_mask,
+            positions=position,
+            retrive_index=retrive_index,
+            retrive_next_token=retrive_next_token,
+            retrive_next_sibling=retrive_next_sibling,
+            retrive_cum_len=None,
+            spec_steps=spec_steps,
+            topk=self.topk,
+            draft_token_num=draft_token_num,
+            capture_hidden_mode=CaptureHiddenMode.FULL,
+            seq_lens_sum=seq_lens.sum().item(),
+            seq_lens_cpu=seq_lens_cpu,
+        )
+
+    def _make_sub_batch(self, batch: ScheduleBatch, indices: List[int]) -> ScheduleBatch:
+        index_tensor = torch.tensor(indices, dtype=torch.long, device=batch.device)
+        sub = dataclasses.replace(batch)
+        sub.reqs = [batch.reqs[i] for i in indices]
+        if batch.multimodal_inputs is not None:
+            sub.multimodal_inputs = [batch.multimodal_inputs[i] for i in indices]
+        sub.req_pool_indices = batch.req_pool_indices[index_tensor]
+        sub.seq_lens = batch.seq_lens[index_tensor].clone()
+        sub.seq_lens_cpu = batch.seq_lens_cpu[indices].clone()
+        if batch.orig_seq_lens is not None:
+            sub.orig_seq_lens = batch.orig_seq_lens[index_tensor]
+        sub.seq_lens_sum = sub.seq_lens.sum().item()
+        if batch.output_ids is not None:
+            sub.output_ids = batch.output_ids[index_tensor]
+        sub.return_logprob = any(req.return_logprob for req in sub.reqs)
+        if batch.return_logprob:
+            sub.top_logprobs_nums = [batch.top_logprobs_nums[i] for i in indices]
+            sub.token_ids_logprobs = [batch.token_ids_logprobs[i] for i in indices]
+        sub.has_stream = any(req.stream for req in sub.reqs)
+        sub.has_grammar = any(req.grammar for req in sub.reqs)
+        sub.sampling_info = copy.deepcopy(batch.sampling_info)
+        sub.sampling_info.filter_batch(indices, index_tensor)
+        return sub
+
+    def _merge_dynamic_k_results(
+        self,
+        batch: ScheduleBatch,
+        results: List[
+            Tuple[List[int], ScheduleBatch, LogitsProcessorOutput, EagleVerifyOutput]
+        ],
+    ) -> Tuple[LogitsProcessorOutput, EagleVerifyOutput, bool]:
+        bs = batch.batch_size()
+        device = batch.seq_lens.device
+        seq_lens_by_idx: Dict[int, torch.Tensor] = {}
+        seq_lens_cpu_by_idx: Dict[int, torch.Tensor] = {}
+        verified_by_idx: Dict[int, torch.Tensor] = {}
+        logits_by_idx: Dict[int, torch.Tensor] = {}
+        hidden_by_idx: Dict[int, torch.Tensor] = {}
+        cache_loc_by_idx: Dict[int, torch.Tensor] = {}
+        accept_lens = [0] * bs
+        can_run_cuda_graph = True
+
+        for indices, sub_batch, logits_output, verify_output in results:
+            can_run_cuda_graph = can_run_cuda_graph and bool(
+                getattr(verify_output, "can_run_cuda_graph", True)
+            )
+            offset = 0
+            for local_idx, original_idx in enumerate(indices):
+                accept_len = int(verify_output.accept_length_per_req_cpu[local_idx])
+                token_count = accept_len + 1
+                accept_lens[original_idx] = accept_len
+                verified_by_idx[original_idx] = verify_output.verified_id[
+                    offset : offset + token_count
+                ]
+                logits_by_idx[original_idx] = logits_output.next_token_logits[
+                    offset : offset + token_count
+                ]
+                if logits_output.hidden_states is not None:
+                    hidden_by_idx[original_idx] = logits_output.hidden_states[
+                        offset : offset + token_count
+                    ]
+                offset += token_count
+                seq_lens_by_idx[original_idx] = sub_batch.seq_lens[local_idx]
+                seq_lens_cpu_by_idx[original_idx] = sub_batch.seq_lens_cpu[local_idx]
+            cache_offset = 0
+            for local_idx, original_idx in enumerate(indices):
+                if sub_batch.reqs[local_idx].finished():
+                    continue
+                token_count = (
+                    int(verify_output.accept_length_per_req_cpu[local_idx]) + 1
+                )
+                cache_loc_by_idx[original_idx] = sub_batch.out_cache_loc[
+                    cache_offset : cache_offset + token_count
+                ]
+                cache_offset += token_count
+
+        batch.seq_lens = torch.stack([seq_lens_by_idx[i] for i in range(bs)])
+        batch.seq_lens_cpu = torch.stack([seq_lens_cpu_by_idx[i] for i in range(bs)])
+        batch.seq_lens_sum = batch.seq_lens.sum().item()
+
+        verified_id = torch.cat([verified_by_idx[i] for i in range(bs)])
+        next_token_logits = torch.cat([logits_by_idx[i] for i in range(bs)])
+        hidden_states = (
+            torch.cat([hidden_by_idx[i] for i in range(bs)])
+            if len(hidden_by_idx) == bs
+            else None
+        )
+
+        unfinished_req_indices = [
+            i for i, req in enumerate(batch.reqs) if not req.finished()
+        ]
+        if unfinished_req_indices:
+            hidden_segments = []
+            verified_segments = []
+            accept_length_values = []
+            seq_lens_values = []
+            seq_lens_cpu_values = []
+            req_pool_values = []
+            for i in unfinished_req_indices:
+                segment = verified_by_idx[i]
+                verified_segments.append(segment)
+                accept_len = accept_lens[i]
+                accept_length_values.append(accept_len)
+                seq_lens_values.append(batch.seq_lens[i])
+                seq_lens_cpu_values.append(batch.seq_lens_cpu[i])
+                req_pool_values.append(batch.req_pool_indices[i])
+                if i in hidden_by_idx:
+                    hidden_segments.append(hidden_by_idx[i])
+            if cache_loc_by_idx:
+                batch.out_cache_loc = torch.cat(
+                    [cache_loc_by_idx[i] for i in unfinished_req_indices]
+                )
+
+            draft_input = EagleDraftInput(
+                hidden_states=(
+                    torch.cat(hidden_segments)
+                    if len(hidden_segments) == len(unfinished_req_indices)
+                    else torch.empty(
+                        (0, self.model_config.hidden_size),
+                        device=device,
+                        dtype=self.model_config.dtype,
+                    )
+                ),
+                verified_id=torch.cat(verified_segments),
+                accept_length=torch.tensor(
+                    accept_length_values, dtype=torch.int32, device=device
+                ),
+                accept_length_cpu=accept_length_values,
+                seq_lens_for_draft_extend=torch.stack(seq_lens_values),
+                seq_lens_for_draft_extend_cpu=torch.stack(seq_lens_cpu_values),
+                req_pool_indices_for_draft_extend=torch.stack(req_pool_values),
+            )
+        else:
+            draft_input = EagleDraftInput.create_idle_input(
+                device=batch.device,
+                hidden_size=batch.model_config.hidden_size,
+                dtype=batch.model_config.dtype,
+                topk=self.topk,
+                capture_hidden_mode=CaptureHiddenMode.LAST,
+            )
+
+        batch.forward_mode = ForwardMode.DECODE
+        batch.spec_info = draft_input
+
+        merged_logits = LogitsProcessorOutput(
+            next_token_logits=next_token_logits,
+            hidden_states=hidden_states,
+        )
+        merged_output = EagleVerifyOutput(
+            draft_input=draft_input,
+            logits_output=merged_logits,
+            verified_id=verified_id,
+            accept_length_per_req_cpu=accept_lens,
+            accepted_indices=torch.empty(0, dtype=torch.long, device=device),
+        )
+        return merged_logits, merged_output, can_run_cuda_graph
 
     def forward_target_extend(
         self, batch: ScheduleBatch
@@ -687,47 +1047,56 @@ class EAGLEWorker(TpModelWorker):
                 self.speculative_num_draft_tokens,
             )
 
+        proposals = self._get_suffix_proposals(batch)
+        long_suffix_indices = self._select_long_suffix_indices(batch, proposals)
+        long_suffix_set = set(long_suffix_indices)
         self._apply_suffix_overrides(
             batch,
             parent_list,
             top_scores_index,
             draft_tokens,
+            proposals=proposals,
+            skip_indices=long_suffix_set,
         )
 
-        (
-            tree_mask,
-            position,
-            retrive_index,
-            retrive_next_token,
-            retrive_next_sibling,
-            draft_tokens,
-        ) = build_tree_kernel_efficient(
-            spec_info.verified_id,
-            parent_list,
-            top_scores_index,
-            draft_tokens,
-            batch.seq_lens,
-            batch.seq_lens_sum,
-            self.topk,
-            self.speculative_num_steps,
-            self.speculative_num_draft_tokens,
-        )
+        normal_indices = [
+            i for i in range(batch.batch_size()) if i not in long_suffix_set
+        ]
+        normal_input = None
+        if normal_indices:
+            normal_input = self._build_standalone_verify_input(
+                batch,
+                parent_list,
+                top_scores_index,
+                draft_tokens,
+                normal_indices,
+                self.speculative_num_steps,
+                self.speculative_num_draft_tokens,
+            )
 
-        return EagleVerifyInput(
-            draft_token=draft_tokens,
-            custom_mask=tree_mask,
-            positions=position,
-            retrive_index=retrive_index,
-            retrive_next_token=retrive_next_token,
-            retrive_next_sibling=retrive_next_sibling,
-            retrive_cum_len=None,
-            spec_steps=self.speculative_num_steps,
-            topk=self.topk,
-            draft_token_num=self.server_args.speculative_num_draft_tokens,
-            capture_hidden_mode=CaptureHiddenMode.FULL,
-            seq_lens_sum=forward_batch.seq_lens_sum,
-            seq_lens_cpu=forward_batch.seq_lens_cpu,
-        )
+        long_suffix_input = None
+        if long_suffix_indices and proposals is not None:
+            long_suffix_input = self._build_linear_suffix_verify_input(
+                batch,
+                proposals,
+                long_suffix_indices,
+                self._long_suffix_draft_token_num,
+            )
+            self._last_suffix_status = (
+                f"dynamic-k long={len(long_suffix_indices)} normal={len(normal_indices)}"
+            )
+
+        if long_suffix_input is not None and normal_input is not None:
+            return DynamicKVerifyInput(
+                normal=normal_input,
+                long_suffix=long_suffix_input,
+                normal_indices=normal_indices,
+                long_suffix_indices=long_suffix_indices,
+            )
+        if long_suffix_input is not None:
+            return long_suffix_input
+        assert normal_input is not None
+        return normal_input
 
     def draft_forward(self, forward_batch: ForwardBatch):
         # Parse args
@@ -805,7 +1174,14 @@ class EAGLEWorker(TpModelWorker):
         # allocator and kv cache pool are shared with target worker
         pass
 
-    def verify(self, batch: ScheduleBatch, spec_info: EagleVerifyInput):
+    def verify(
+        self,
+        batch: ScheduleBatch,
+        spec_info: Union[EagleVerifyInput, DynamicKVerifyInput],
+    ):
+        if isinstance(spec_info, DynamicKVerifyInput):
+            return self._verify_dynamic_k(batch, spec_info)
+
         spec_info.prepare_for_verify(batch, self.page_size)
         batch.return_hidden_states = False
         batch.forward_mode = (
@@ -926,6 +1302,45 @@ class EAGLEWorker(TpModelWorker):
         batch.spec_info = res.draft_input
 
         return logits_output, res, model_worker_batch, can_run_cuda_graph
+
+    def _verify_dynamic_k(
+        self, batch: ScheduleBatch, spec_info: DynamicKVerifyInput
+    ):
+        results = []
+        if spec_info.normal is not None and spec_info.normal_indices:
+            normal_batch = self._make_sub_batch(batch, spec_info.normal_indices)
+            logits_output, verify_output, _, can_run_cuda_graph = self.verify(
+                normal_batch, spec_info.normal
+            )
+            verify_output.can_run_cuda_graph = can_run_cuda_graph
+            results.append(
+                (
+                    spec_info.normal_indices,
+                    normal_batch,
+                    logits_output,
+                    verify_output,
+                )
+            )
+
+        if spec_info.long_suffix is not None and spec_info.long_suffix_indices:
+            suffix_batch = self._make_sub_batch(batch, spec_info.long_suffix_indices)
+            logits_output, verify_output, _, can_run_cuda_graph = self.verify(
+                suffix_batch, spec_info.long_suffix
+            )
+            verify_output.can_run_cuda_graph = can_run_cuda_graph
+            results.append(
+                (
+                    spec_info.long_suffix_indices,
+                    suffix_batch,
+                    logits_output,
+                    verify_output,
+                )
+            )
+
+        logits_output, verify_output, can_run_cuda_graph = (
+            self._merge_dynamic_k_results(batch, results)
+        )
+        return logits_output, verify_output, None, can_run_cuda_graph
 
     def add_logprob_values(
         self,
@@ -1087,9 +1502,19 @@ class EAGLEWorker(TpModelWorker):
 
         batch.spec_info.num_tokens_per_batch = self.speculative_num_steps + 1
         batch.spec_info.num_tokens_for_logprob_per_batch = 1
+        prepare_num_steps = self.speculative_num_steps
+        if (
+            self._dynamic_k_enable
+            and batch.spec_info.accept_length is not None
+            and batch.spec_info.accept_length.numel() > 0
+        ):
+            prepare_num_steps = max(
+                prepare_num_steps, int(batch.spec_info.accept_length.max().item())
+            )
+
         batch.spec_info.prepare_extend_after_decode(
             batch,
-            self.speculative_num_steps,
+            prepare_num_steps,
         )
         batch.forward_mode = (
             ForwardMode.DRAFT_EXTEND
