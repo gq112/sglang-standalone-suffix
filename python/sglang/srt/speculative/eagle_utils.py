@@ -356,6 +356,8 @@ def verify_tree_greedy_func(
     if _is_cuda or _is_hip:
         from sgl_kernel import verify_tree_greedy
 
+        if candidates.dtype != torch.long:
+            candidates = candidates.to(torch.long)
         verify_tree_greedy(
             predicts=predicts,  # mutable
             accept_index=accept_index,  # mutable

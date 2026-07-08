@@ -71,6 +71,8 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
 
     def __post_init__(self):
         super().__init__(SpecInputType.EAGLE_VERIFY)
+        if self.draft_token.dtype != torch.long:
+            self.draft_token = self.draft_token.to(torch.long)
 
     def get_spec_adjust_token_coefficient(self) -> Tuple[int, int]:
         return self.draft_token_num, self.draft_token_num
