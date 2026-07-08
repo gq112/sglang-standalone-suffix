@@ -109,6 +109,9 @@ class SpeculativeDecodingMetricsMixin:
     # Accepted tokens: Number of accepted tokens during speculative decoding
     spec_accepted_tokens: List[int]
 
+    # Draft tokens: Number of proposed draft tokens during speculative decoding
+    spec_draft_tokens: List[int]
+
 
 # Parameters for a session
 @dataclass

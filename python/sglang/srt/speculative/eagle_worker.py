@@ -324,6 +324,7 @@ class EAGLEWorker(TpModelWorker):
                 self.draft_model_runner.tp_group
             ), speculative_moe_backend_context():
                 spec_info = self.draft(batch)
+            num_draft_tokens = self._get_num_verify_tokens(batch.batch_size(), spec_info)
             logits_output, verify_output, model_worker_batch, can_run_cuda_graph = (
                 self.verify(batch, spec_info)
             )
@@ -347,9 +348,27 @@ class EAGLEWorker(TpModelWorker):
                 logits_output=logits_output,
                 next_token_ids=verify_output.verified_id,
                 num_accepted_tokens=sum(verify_output.accept_length_per_req_cpu),
+                num_draft_tokens=num_draft_tokens,
                 can_run_cuda_graph=can_run_cuda_graph,
                 suffix_status=self._last_suffix_status,
             )
+
+    def _get_num_verify_tokens(
+        self,
+        batch_size: int,
+        spec_info: Union[EagleVerifyInput, DynamicKVerifyInput],
+    ) -> int:
+        if isinstance(spec_info, DynamicKVerifyInput):
+            total = 0
+            if spec_info.normal is not None:
+                total += len(spec_info.normal_indices) * spec_info.normal.draft_token_num
+            if spec_info.long_suffix is not None:
+                total += (
+                    len(spec_info.long_suffix_indices)
+                    * spec_info.long_suffix.draft_token_num
+                )
+            return total
+        return batch_size * spec_info.draft_token_num
 
     def check_forward_draft_extend_after_decode(self, batch: ScheduleBatch):
         local_need_forward = batch.spec_info.verified_id.shape[0] > 0

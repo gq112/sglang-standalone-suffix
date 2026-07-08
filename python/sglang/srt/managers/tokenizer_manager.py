@@ -1723,9 +1723,16 @@ class TokenizerManager(TokenizerCommunicatorMixin):
             # Checks that `spec_accepted_tokens[i]` will exist.
             and len(recv_obj.spec_accepted_tokens) > i
         ):
-            total_draft_tokens = (
-                recv_obj.spec_verify_ct[i] * self.server_args.speculative_num_steps
-            )
+            if (
+                hasattr(recv_obj, "spec_draft_tokens")
+                and recv_obj.spec_draft_tokens is not None
+                and len(recv_obj.spec_draft_tokens) > i
+            ):
+                total_draft_tokens = recv_obj.spec_draft_tokens[i]
+            else:
+                total_draft_tokens = (
+                    recv_obj.spec_verify_ct[i] * self.server_args.speculative_num_steps
+                )
             accepted_tokens = recv_obj.spec_accepted_tokens[i]
 
             # Calculate per-request acceptance rate and average acceptance length.

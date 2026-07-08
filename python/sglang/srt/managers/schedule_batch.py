@@ -639,6 +639,7 @@ class Req:
         # The number of accepted tokens in speculative decoding for this request.
         # This is used to compute the acceptance rate and average acceptance length per request.
         self.spec_accepted_tokens = 0
+        self.spec_draft_tokens = 0
 
         # The number of times this request has been retracted / preempted.
         self.retraction_count = 0

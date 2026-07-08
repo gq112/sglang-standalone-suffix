@@ -276,6 +276,7 @@ class SchedulerOutputProcessorMixin:
             )
             req.spec_verify_ct += 1
             req.spec_accepted_tokens += accept_lens[i] - 1
+            req.spec_draft_tokens += stride - 1
 
         return predict_tokens
 
@@ -304,7 +305,11 @@ class SchedulerOutputProcessorMixin:
 
         self.num_generated_tokens += len(batch.reqs)
         if not batch.spec_algorithm.is_none():
-            self.update_spec_metrics(batch.batch_size(), result.num_accepted_tokens)
+            self.update_spec_metrics(
+                batch.batch_size(),
+                result.num_accepted_tokens,
+                result.num_draft_tokens,
+            )
 
         self.token_to_kv_pool_allocator.free_group_begin()
 
@@ -758,6 +763,7 @@ class SchedulerOutputProcessorMixin:
         cached_tokens = []
         spec_verify_ct = []
         spec_accepted_tokens = []
+        spec_draft_tokens = []
         retraction_counts = []
         output_hidden_states = None
 
@@ -891,6 +897,7 @@ class SchedulerOutputProcessorMixin:
                 if not self.spec_algorithm.is_none():
                     spec_verify_ct.append(req.spec_verify_ct)
                     spec_accepted_tokens.append(req.spec_accepted_tokens)
+                    spec_draft_tokens.append(req.spec_draft_tokens)
 
                 if return_logprob:
                     if (
@@ -981,6 +988,7 @@ class SchedulerOutputProcessorMixin:
                 BatchTokenIDOutput(
                     spec_verify_ct=spec_verify_ct,
                     spec_accepted_tokens=spec_accepted_tokens,
+                    spec_draft_tokens=spec_draft_tokens,
                     queue_time=queue_times,
                     forward_entry_time=forward_entry_times,
                     prefill_delay=prefill_delays,

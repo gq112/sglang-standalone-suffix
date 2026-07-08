@@ -217,6 +217,7 @@ class NGRAMWorker:
         self._prepare_for_speculative_decoding(batch)
         model_worker_batch = batch.get_model_worker_batch()
         num_accepted_tokens = 0
+        num_draft_tokens = 0
 
         if model_worker_batch.forward_mode.is_target_verify():
             batch_result = self.target_worker.forward_batch_generation(
@@ -227,6 +228,7 @@ class NGRAMWorker:
                 batch_result.can_run_cuda_graph,
             )
             verify_input = model_worker_batch.spec_info
+            num_draft_tokens = batch.batch_size() * verify_input.draft_token_num
             logits_output, next_token_ids, num_accepted_tokens = verify_input.verify(
                 batch, logits_output, self.page_size
             )
@@ -247,5 +249,6 @@ class NGRAMWorker:
             logits_output=logits_output,
             next_token_ids=next_token_ids,
             num_accepted_tokens=num_accepted_tokens,
+            num_draft_tokens=num_draft_tokens,
             can_run_cuda_graph=can_run_cuda_graph,
         )

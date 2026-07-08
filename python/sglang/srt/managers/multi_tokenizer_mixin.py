@@ -99,6 +99,11 @@ def _handle_output_by_index(output, i):
                 if len(output.spec_accepted_tokens) > i
                 else None
             ),
+            spec_draft_tokens=(
+                [output.spec_draft_tokens[i]]
+                if len(output.spec_draft_tokens) > i
+                else None
+            ),
             queue_time=[output.queue_time[i]] if len(output.queue_time) > i else None,
             forward_entry_time=(
                 [output.forward_entry_time[i]]
@@ -253,6 +258,11 @@ def _handle_output_by_index(output, i):
             spec_accepted_tokens=(
                 [output.spec_accepted_tokens[i]]
                 if len(output.spec_accepted_tokens) > i
+                else None
+            ),
+            spec_draft_tokens=(
+                [output.spec_draft_tokens[i]]
+                if len(output.spec_draft_tokens) > i
                 else None
             ),
             queue_time=[output.queue_time[i]] if len(output.queue_time) > i else None,

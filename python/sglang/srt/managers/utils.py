@@ -25,6 +25,7 @@ class GenerationBatchResult:
     pp_hidden_states_proxy_tensors: Optional[PPProxyTensors] = None
     next_token_ids: Optional[torch.Tensor] = None
     num_accepted_tokens: Optional[int] = None
+    num_draft_tokens: Optional[int] = None
     can_run_cuda_graph: bool = False
     suffix_status: Optional[str] = None
 
