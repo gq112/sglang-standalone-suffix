@@ -1500,17 +1500,24 @@ class EAGLEWorker(TpModelWorker):
                 capture_hidden_mode=CaptureHiddenMode.LAST,
             )
 
-        batch.spec_info.num_tokens_per_batch = self.speculative_num_steps + 1
-        batch.spec_info.num_tokens_for_logprob_per_batch = 1
         prepare_num_steps = self.speculative_num_steps
+        num_tokens_per_batch = prepare_num_steps + 1
         if (
             self._dynamic_k_enable
             and batch.spec_info.accept_length is not None
             and batch.spec_info.accept_length.numel() > 0
         ):
-            prepare_num_steps = max(
-                prepare_num_steps, int(batch.spec_info.accept_length.max().item())
-            )
+            required_num_tokens = int(batch.spec_info.accept_length.max().item()) + 1
+            if required_num_tokens > num_tokens_per_batch:
+                num_tokens_per_batch = (
+                    self._long_suffix_draft_token_num
+                    if required_num_tokens <= self._long_suffix_draft_token_num
+                    else required_num_tokens
+                )
+                prepare_num_steps = num_tokens_per_batch - 1
+
+        batch.spec_info.num_tokens_per_batch = num_tokens_per_batch
+        batch.spec_info.num_tokens_for_logprob_per_batch = 1
 
         batch.spec_info.prepare_extend_after_decode(
             batch,

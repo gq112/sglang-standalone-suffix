@@ -69,6 +69,7 @@ class EAGLEDraftCudaGraphRunner:
         # Batch sizes to capture
         self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(model_runner)
         self.num_tokens_per_bs = server_args.speculative_eagle_topk
+        self.capture_num_tokens_per_bs_values = [self.num_tokens_per_bs]
 
         # Attention backend
         self.max_bs = max(self.capture_bs)
@@ -147,10 +148,15 @@ class EAGLEDraftCudaGraphRunner:
             cuda_graph_bs = forward_batch.batch_size
 
         is_bs_supported = (
-            cuda_graph_bs in self.graphs
+            (self.num_tokens_per_bs, cuda_graph_bs) in self.graphs
             if self.disable_padding
             else cuda_graph_bs <= self.max_bs
         )
+        if (
+            not self.disable_padding
+            and (self.num_tokens_per_bs, self.capture_bs[-1]) not in self.graphs
+        ):
+            return False
 
         if self.require_mlp_sync:
             is_bs_supported = is_bs_supported and forward_batch.can_run_dp_cuda_graph
@@ -362,8 +368,9 @@ class EAGLEDraftCudaGraphRunner:
         # TODO: The forward_batch.seq_len_sum might need to be updated to reflect the padding in the cuda graph
 
         # Replay
-        self.graphs[bs].replay()
-        out = self.output_buffers[bs]
+        graph_key = (self.num_tokens_per_bs, bs)
+        self.graphs[graph_key].replay()
+        out = self.output_buffers[graph_key]
 
         if bs != raw_bs:
             out = self._postprocess_output_to_raw_bs(out, raw_bs)

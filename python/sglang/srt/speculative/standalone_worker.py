@@ -44,9 +44,27 @@ class StandaloneWorker(EAGLEWorker):
             server_args.speculative_algorithm
         )
 
-        # Standalone implements its own __init__, so initialize the suffix
-        # proposer explicitly instead of relying on EAGLEWorker.__init__.
+        # Standalone implements its own __init__, so initialize suffix and
+        # dynamic-K state explicitly instead of relying on EAGLEWorker.__init__.
         self._suffix_proposer = None
+        self._last_suffix_status = None
+        self._dynamic_k_enable = (
+            server_args.speculative_dynamic_k_enable
+            and server_args.speculative_suffix_enable
+        )
+        self._normal_draft_token_num = (
+            server_args.speculative_normal_draft_token_num
+            if self._dynamic_k_enable
+            else server_args.speculative_num_draft_tokens
+        )
+        self._long_suffix_draft_token_num = (
+            server_args.speculative_long_suffix_draft_token_num
+        )
+        self._long_suffix_min_match_len = (
+            server_args.speculative_long_suffix_min_match_len
+        )
+        self._long_suffix_max_bs = server_args.speculative_long_suffix_max_bs
+        self._high_bs_threshold = server_args.speculative_high_bs_threshold
         if server_args.speculative_suffix_enable:
             self._init_suffix_proposer(target_worker)
 
