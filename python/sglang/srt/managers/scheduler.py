@@ -2391,7 +2391,6 @@ class Scheduler(
             self.num_generated_tokens = 0
             self.forward_ct_decode = 0
             self.spec_num_accepted_tokens = 0
-            self.spec_num_draft_accepted_tokens = 0
             self.spec_num_draft_tokens = 0
             self.spec_num_forward_ct = 0
             self.spec_total_num_accepted_tokens = 0

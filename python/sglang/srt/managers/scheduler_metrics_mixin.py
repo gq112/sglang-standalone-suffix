@@ -47,7 +47,6 @@ class SchedulerMetricsMixin:
 
         # The number of accepted tokens and forward ct for the recent `decode_log_interval` batches (for logging)
         self.spec_num_accepted_tokens = 0
-        self.spec_num_draft_accepted_tokens = 0
         self.spec_num_draft_tokens = 0
         self.spec_num_forward_ct = 0
         # The total number of accepted tokens and forward ct for the whole server lifetime
@@ -85,11 +84,8 @@ class SchedulerMetricsMixin:
         num_draft_tokens: Optional[int] = None,
     ):
         self.spec_num_accepted_tokens += num_accepted_tokens + bs
-        self.spec_num_draft_accepted_tokens += num_accepted_tokens
         if num_draft_tokens is None:
-            num_draft_tokens = bs * (self.server_args.speculative_num_steps or 0)
-        else:
-            num_draft_tokens = max(num_draft_tokens - bs, 0)
+            num_draft_tokens = bs * ((self.server_args.speculative_num_steps or 0) + 1)
         self.spec_num_draft_tokens += num_draft_tokens
         self.spec_num_forward_ct += bs
         self.num_generated_tokens += num_accepted_tokens
@@ -286,14 +282,13 @@ class SchedulerMetricsMixin:
                 self.spec_num_accepted_tokens / self.spec_num_forward_ct
             )
             spec_accept_rate = (
-                self.spec_num_draft_accepted_tokens / self.spec_num_draft_tokens
+                self.spec_num_accepted_tokens / self.spec_num_draft_tokens
                 if self.spec_num_draft_tokens > 0
                 else 0
             )
             self.spec_total_num_accepted_tokens += self.spec_num_accepted_tokens
             self.spec_total_num_forward_ct += self.spec_num_forward_ct
             self.spec_num_accepted_tokens = 0
-            self.spec_num_draft_accepted_tokens = 0
             self.spec_num_draft_tokens = 0
             self.spec_num_forward_ct = 0
             msg += f"accept len: {spec_accept_length:.2f}, accept rate: {spec_accept_rate:.2f}, "
