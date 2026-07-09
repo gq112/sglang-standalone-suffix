@@ -157,3 +157,29 @@ Result table:
 | dynamic-k long K=8 | 1.39 GB | 0.41 GB | 0.30 GB | 2.10 GB | 4.81 GB | +0.29 GB |
 | dynamic-k long K=10 | TBD | TBD | TBD | TBD | TBD | TBD |
 | dynamic-k long K=12 | TBD | TBD | TBD | TBD | TBD | TBD |
+
+## Automated Sweep
+
+Use this script to launch each case, wait until the server finishes startup, stop
+it, and parse all logs:
+
+```bash
+bash scripts/run_cuda_graph_memory_sweep.sh
+```
+
+Defaults:
+
+```text
+NORMAL_K=4
+LONG_K_LIST="6 8 10 12"
+CUDA_GRAPH_MAX_BS=16
+TP_SIZE=4
+PORT=30000
+LOG_DIR=logs
+```
+
+Override values with environment variables:
+
+```bash
+LONG_K_LIST="5 6 8 10 12" PORT=30001 bash scripts/run_cuda_graph_memory_sweep.sh
+```
