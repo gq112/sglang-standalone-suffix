@@ -153,10 +153,28 @@ Result table:
 | Run | Target Verify | Draft Decode | Draft Extend | Total Graph | Final Available | Delta vs Baseline |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | baseline standalone K=4 | 1.14 GB | 0.43 GB | 0.24 GB | 1.81 GB | 5.13 GB | 0.00 GB |
-| dynamic-k long K=6 | TBD | TBD | TBD | TBD | TBD | TBD |
+| dynamic-k long K=6 | 1.34 GB | 0.41 GB | 0.31 GB | 2.06 GB | 4.84 GB | +0.25 GB |
 | dynamic-k long K=8 | 1.39 GB | 0.41 GB | 0.30 GB | 2.10 GB | 4.81 GB | +0.29 GB |
-| dynamic-k long K=10 | TBD | TBD | TBD | TBD | TBD | TBD |
-| dynamic-k long K=12 | TBD | TBD | TBD | TBD | TBD | TBD |
+| dynamic-k long K=10 | 1.45 GB | 0.43 GB | 0.33 GB | 2.21 GB | 4.73 GB | +0.40 GB |
+| dynamic-k long K=12 | 1.49 GB | 0.43 GB | 0.33 GB | 2.25 GB | 4.69 GB | +0.44 GB |
+
+Measured deltas by component:
+
+| Run | Target Verify Delta | Draft Decode Delta | Draft Extend Delta | Total Graph Delta | Final Available Delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| dynamic-k long K=6 | +0.20 GB | -0.02 GB | +0.07 GB | +0.25 GB | -0.29 GB |
+| dynamic-k long K=8 | +0.25 GB | -0.02 GB | +0.06 GB | +0.29 GB | -0.32 GB |
+| dynamic-k long K=10 | +0.31 GB | +0.00 GB | +0.09 GB | +0.40 GB | -0.40 GB |
+| dynamic-k long K=12 | +0.35 GB | +0.00 GB | +0.09 GB | +0.44 GB | -0.44 GB |
+
+Observed trend:
+
+- Increasing long-suffix K from 6 to 12 raises total CUDA graph memory from
+  `2.06 GB/GPU` to `2.25 GB/GPU`.
+- Compared with standalone K=4, the measured extra graph memory is about
+  `+0.25 GB/GPU` at K=6 and `+0.44 GB/GPU` at K=12.
+- Most of the growth comes from the target verify CUDA graph. Draft decode is
+  effectively unchanged, and draft extend grows only slightly.
 
 ## Automated Sweep
 
