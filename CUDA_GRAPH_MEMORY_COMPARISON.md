@@ -160,8 +160,8 @@ Result table:
 
 ## Automated Sweep
 
-Use this script to launch each case, wait until the server finishes startup, stop
-it, and parse all logs:
+Use this script to launch each case, wait until the graph memory summary line is
+printed, stop it, and parse all logs:
 
 ```bash
 bash scripts/run_cuda_graph_memory_sweep.sh
@@ -177,6 +177,11 @@ TP_SIZE=4
 PORT=30000
 LOG_DIR=logs
 ```
+
+The script stops a run after seeing either `max_total_num_tokens=...available_mem=...`
+or the normal server startup message. This is intentional: CUDA graph memory is
+already measurable once the `max_total_num_tokens` line is printed, so a later API
+server startup hang does not block the memory sweep.
 
 Override values with environment variables:
 

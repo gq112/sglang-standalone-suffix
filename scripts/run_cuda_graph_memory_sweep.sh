@@ -16,6 +16,7 @@ LOG_DIR="${LOG_DIR:-logs}"
 STARTUP_TIMEOUT_SEC="${STARTUP_TIMEOUT_SEC:-600}"
 SHUTDOWN_GRACE_SEC="${SHUTDOWN_GRACE_SEC:-8}"
 LD_PRELOAD_PATH="${LD_PRELOAD_PATH:-/usr/lib/x86_64-linux-gnu/libstdc++.so.6}"
+READY_PATTERN="max_total_num_tokens=.*available_(gpu_)?mem=|Application startup complete|The server is fired up"
 
 mkdir -p "${LOG_DIR}"
 
@@ -31,13 +32,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-wait_for_startup() {
+wait_for_memory_snapshot() {
   local log_file="$1"
   local started_at
   started_at="$(date +%s)"
 
   while true; do
-    if grep -qE "Application startup complete|The server is fired up" "${log_file}" 2>/dev/null; then
+    if grep -qE "${READY_PATTERN}" "${log_file}" 2>/dev/null; then
       return 0
     fi
 
@@ -47,12 +48,13 @@ wait_for_startup() {
     fi
 
     if ! kill -0 "${RUN_PID}" 2>/dev/null; then
-      echo "Server process exited before startup. See ${log_file}" >&2
+      echo "Server process exited before graph memory snapshot. See ${log_file}" >&2
       return 1
     fi
 
     if (( "$(date +%s)" - started_at > STARTUP_TIMEOUT_SEC )); then
-      echo "Timed out waiting for startup after ${STARTUP_TIMEOUT_SEC}s. See ${log_file}" >&2
+      echo "Timed out waiting for graph memory snapshot after ${STARTUP_TIMEOUT_SEC}s. See ${log_file}" >&2
+      tail -n 80 "${log_file}" >&2 || true
       return 1
     fi
 
@@ -92,8 +94,8 @@ run_case() {
   setsid bash -c "$* 2>&1 | tee '${log_file}'" &
   RUN_PID="$!"
 
-  if wait_for_startup "${log_file}"; then
-    echo "Startup complete for ${name}. Stopping server..."
+  if wait_for_memory_snapshot "${log_file}"; then
+    echo "Graph memory snapshot collected for ${name}. Stopping server..."
     stop_server
   else
     stop_server
@@ -133,4 +135,3 @@ echo "==== CUDA graph memory summary ===="
 python scripts/parse_cuda_graph_memory.py \
   "${LOG_DIR}/cuda_graph_standalone_k${NORMAL_K}.log" \
   $(for long_k in ${LONG_K_LIST}; do printf "%s " "${LOG_DIR}/cuda_graph_dynamic_k_${long_k}.log"; done)
-
