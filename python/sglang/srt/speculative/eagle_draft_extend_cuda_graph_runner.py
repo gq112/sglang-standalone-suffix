@@ -312,6 +312,7 @@ class EAGLEDraftExtendCudaGraphRunner:
             accept_length=accept_length,
         )
         spec_info.positions = None
+        spec_info.cuda_graph_num_tokens_per_bs = num_tokens_per_bs
 
         self.deepep_adapter.capture(is_extend_in_batch=True)
 
@@ -404,6 +405,7 @@ class EAGLEDraftExtendCudaGraphRunner:
         raw_bs = forward_batch.batch_size
         num_tokens = forward_batch.input_ids.shape[0]
         num_tokens_per_bs = self._get_num_tokens_per_bs(forward_batch)
+        forward_batch.spec_info.cuda_graph_num_tokens_per_bs = num_tokens_per_bs
         if self.require_mlp_tp_gather:
             max_num_tokens = max(forward_batch.global_num_tokens_cpu)
             max_batch_size = (

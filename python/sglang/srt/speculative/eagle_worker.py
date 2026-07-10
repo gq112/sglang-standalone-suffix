@@ -581,11 +581,6 @@ class EAGLEWorker(TpModelWorker):
 
         if len(indices) > self._long_suffix_max_bs:
             return []
-        if 0 < len(indices) < bs:
-            self._last_suffix_status = (
-                f"dynamic-k skipped mixed batch long={len(indices)} normal={bs - len(indices)}"
-            )
-            return []
         return indices
 
     def _build_linear_suffix_verify_input(

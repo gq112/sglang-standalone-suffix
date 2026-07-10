@@ -283,7 +283,10 @@ class FlashInferAttnBackend(AttentionBackend):
         self.forward_metadata: Union[PrefillMetadata, DecodeMetadata] = None
 
         self.decode_cuda_graph_metadata = {}
-        self.prefill_cuda_graph_metadata = {}  # For verify
+        # Prefill CUDA graphs are shape-sensitive. In particular, speculative
+        # target verify and draft extend can capture multiple token widths for
+        # the same batch size, so batch size alone is not a sufficient key.
+        self.prefill_cuda_graph_metadata = {}
         self.draft_extend_cuda_graph_metadata = {}  # For draft extend
 
     def _process_multi_item_scoring(
@@ -529,6 +532,35 @@ class FlashInferAttnBackend(AttentionBackend):
             self.cuda_graph_qk_indptr = [x.clone() for x in self.kv_indptr]
             self.cuda_graph_qo_indptr = [x.clone() for x in self.kv_indptr]
 
+    @staticmethod
+    def _prefill_cuda_graph_key(
+        forward_mode: ForwardMode, bs: int, num_tokens_per_bs: int
+    ) -> tuple[ForwardMode, int, int]:
+        return forward_mode, bs, num_tokens_per_bs
+
+    @staticmethod
+    def _get_replay_num_tokens_per_bs(
+        forward_mode: ForwardMode, spec_info: Optional[SpecInput]
+    ) -> int:
+        if spec_info is None:
+            raise RuntimeError("CUDA graph prefill replay requires speculative input")
+
+        num_tokens_per_bs = getattr(
+            spec_info, "cuda_graph_num_tokens_per_bs", None
+        )
+        if num_tokens_per_bs is None and forward_mode.is_target_verify():
+            num_tokens_per_bs = getattr(spec_info, "draft_token_num", None)
+        if num_tokens_per_bs is None and forward_mode.is_draft_extend():
+            accept_length = getattr(spec_info, "accept_length", None)
+            if accept_length is not None and accept_length.numel() > 0:
+                num_tokens_per_bs = int(accept_length.max().item())
+
+        if num_tokens_per_bs is None:
+            raise RuntimeError(
+                f"Unable to determine CUDA graph token width for {forward_mode=}"
+            )
+        return int(num_tokens_per_bs)
+
     def init_forward_metadata_capture_cuda_graph(
         self,
         bs: int,
@@ -601,7 +633,10 @@ class FlashInferAttnBackend(AttentionBackend):
                 encoder_lens=encoder_lens,
                 spec_info=spec_info,
             )
-            self.prefill_cuda_graph_metadata[bs] = prefill_wrappers
+            graph_key = self._prefill_cuda_graph_key(
+                forward_mode, bs, num_tokens // bs
+            )
+            self.prefill_cuda_graph_metadata[graph_key] = prefill_wrappers
             self.forward_metadata = PrefillMetadata(prefill_wrappers, False, False)
         elif forward_mode.is_draft_extend():
             prefill_wrappers = []
@@ -631,7 +666,10 @@ class FlashInferAttnBackend(AttentionBackend):
                 encoder_lens=encoder_lens,
                 spec_info=spec_info,
             )
-            self.prefill_cuda_graph_metadata[bs] = prefill_wrappers
+            graph_key = self._prefill_cuda_graph_key(
+                forward_mode, bs, num_tokens // bs
+            )
+            self.prefill_cuda_graph_metadata[graph_key] = prefill_wrappers
             self.forward_metadata = PrefillMetadata(prefill_wrappers, False, False)
         else:
             raise ValueError(f"Invalid mode: {forward_mode=}")
@@ -660,25 +698,35 @@ class FlashInferAttnBackend(AttentionBackend):
                 disable_split_kv=self.disable_cuda_graph_kv_split,
             )
         elif forward_mode.is_target_verify():
+            graph_key = self._prefill_cuda_graph_key(
+                forward_mode,
+                bs,
+                self._get_replay_num_tokens_per_bs(forward_mode, spec_info),
+            )
             self.indices_updater_prefill.update(
                 req_pool_indices[:bs],
                 seq_lens[:bs],
                 seq_lens_cpu[:bs] if seq_lens_cpu is not None else None,
                 seq_lens_sum,
                 prefix_lens=None,
-                prefill_wrappers=self.prefill_cuda_graph_metadata[bs],
+                prefill_wrappers=self.prefill_cuda_graph_metadata[graph_key],
                 use_ragged=False,
                 encoder_lens=encoder_lens[:bs] if encoder_lens is not None else None,
                 spec_info=spec_info,
             )
         elif forward_mode.is_draft_extend():
+            graph_key = self._prefill_cuda_graph_key(
+                forward_mode,
+                bs,
+                self._get_replay_num_tokens_per_bs(forward_mode, spec_info),
+            )
             self.indices_updater_prefill.update(
                 req_pool_indices[:bs],
                 seq_lens[:bs],
                 seq_lens_cpu[:bs] if seq_lens_cpu is not None else None,
                 seq_lens_sum,
                 prefix_lens=None,
-                prefill_wrappers=self.prefill_cuda_graph_metadata[bs],
+                prefill_wrappers=self.prefill_cuda_graph_metadata[graph_key],
                 use_ragged=False,
                 encoder_lens=encoder_lens[:bs] if encoder_lens is not None else None,
                 spec_info=spec_info,

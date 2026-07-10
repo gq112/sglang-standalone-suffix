@@ -790,6 +790,13 @@ class CudaGraphRunner:
         num_tokens_per_bs = self._get_num_tokens_per_bs(forward_batch)
         raw_num_token = raw_bs * num_tokens_per_bs
 
+        # FlashInfer's prefill wrapper cache needs the active speculative width
+        # to select the matching CUDA-graph plan for dynamic-K verify.
+        if forward_batch.forward_mode.is_target_verify():
+            forward_batch.spec_info.cuda_graph_num_tokens_per_bs = (
+                num_tokens_per_bs
+            )
+
         # Pad
         if self.require_mlp_tp_gather:
             max_num_tokens = max(forward_batch.global_num_tokens_cpu)
