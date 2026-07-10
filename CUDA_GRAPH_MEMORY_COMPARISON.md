@@ -34,44 +34,50 @@ Memory summary per GPU:
 
 ## Suffix + Dynamic-K
 
+The measurements below were repeated after fixing the FlashInfer CUDA graph
+metadata key so that K=4 and long-K plans for the same batch size no longer
+overwrite each other. Earlier dynamic-K measurements are invalid because they
+did not retain both graph-compatible FlashInfer plans.
+
 Log excerpts:
 
 ```text
-Capture cuda graph end. mem usage=1.39 GB. avail mem=7.38 GB.
-Capture draft cuda graph end. mem usage=0.41 GB. avail mem=5.11 GB.
-Capture draft extend cuda graph end. mem usage=0.30 GB. avail mem=4.81 GB.
+Capture cuda graph end. mem usage=2.26 GB. avail mem=6.51 GB.
+Capture draft cuda graph end. mem usage=0.41 GB. avail mem=4.24 GB.
+Capture draft extend cuda graph end. mem usage=0.42 GB. avail mem=3.82 GB.
 ```
 
 Memory summary per GPU:
 
 | Component | Memory |
 | --- | ---: |
-| Target verify CUDA graph | 1.39 GB |
+| Target verify CUDA graph | 2.26 GB |
 | Draft CUDA graph | 0.41 GB |
-| Draft extend CUDA graph | 0.30 GB |
-| Total CUDA graph memory | 2.10 GB |
-| Final available memory | 4.81 GB |
+| Draft extend CUDA graph | 0.42 GB |
+| Total CUDA graph memory | 3.09 GB |
+| Final available memory | 3.82 GB |
 
 ## Delta
 
 | Component | Baseline | Dynamic-K | Delta |
 | --- | ---: | ---: | ---: |
-| Target verify CUDA graph | 1.14 GB | 1.39 GB | +0.25 GB |
+| Target verify CUDA graph | 1.14 GB | 2.26 GB | +1.12 GB |
 | Draft CUDA graph | 0.43 GB | 0.41 GB | -0.02 GB |
-| Draft extend CUDA graph | 0.24 GB | 0.30 GB | +0.06 GB |
-| Total CUDA graph memory | 1.81 GB | 2.10 GB | +0.29 GB |
-| Final available memory | 5.13 GB | 4.81 GB | -0.32 GB |
+| Draft extend CUDA graph | 0.24 GB | 0.42 GB | +0.18 GB |
+| Total CUDA graph memory | 1.81 GB | 3.09 GB | +1.28 GB |
+| Final available memory | 5.13 GB | 3.82 GB | -1.31 GB |
 
 ## Conclusion
 
-The suffix + dynamic-K path adds about `0.29 GB/GPU` of CUDA graph memory based
-on the reported `mem usage` values. The final available memory drops by about
-`0.32 GB/GPU`, which is consistent with the CUDA graph delta plus minor allocator
-and measurement variance.
+With correct FlashInfer plan retention, the suffix + dynamic-K K=8 path adds
+about `1.28 GB/GPU` of CUDA graph memory. The final available memory drops by
+about `1.31 GB/GPU`, which is consistent with the graph-memory delta plus minor
+allocator and measurement variance.
 
-Most of the additional memory comes from capturing the extra `K=8` target verify
-graph. The draft extend graph also adds a smaller amount because it captures both
-the normal `K=4` and long-suffix `K=8` shapes.
+Most of the additional memory comes from retaining separate K=4 and K=8
+FlashInfer target-verify plans. The draft-extend graph also retains both normal
+and long-suffix shapes. This is required for safe CUDA graph replay: a K=4 graph
+cannot reuse the K=8 FlashInfer wrapper for the same batch size.
 
 ## K Sweep Plan
 
@@ -153,28 +159,28 @@ Result table:
 | Run | Target Verify | Draft Decode | Draft Extend | Total Graph | Final Available | Delta vs Baseline |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | baseline standalone K=4 | 1.14 GB | 0.43 GB | 0.24 GB | 1.81 GB | 5.13 GB | 0.00 GB |
-| dynamic-k long K=6 | 1.34 GB | 0.41 GB | 0.31 GB | 2.06 GB | 4.84 GB | +0.25 GB |
-| dynamic-k long K=8 | 1.39 GB | 0.41 GB | 0.30 GB | 2.10 GB | 4.81 GB | +0.29 GB |
-| dynamic-k long K=10 | 1.45 GB | 0.43 GB | 0.33 GB | 2.21 GB | 4.73 GB | +0.40 GB |
-| dynamic-k long K=12 | 1.49 GB | 0.43 GB | 0.33 GB | 2.25 GB | 4.69 GB | +0.44 GB |
+| dynamic-k long K=6 | 2.21 GB | 0.41 GB | 0.43 GB | 3.05 GB | 3.85 GB | +1.24 GB |
+| dynamic-k long K=8 | 2.26 GB | 0.41 GB | 0.42 GB | 3.09 GB | 3.82 GB | +1.28 GB |
+| dynamic-k long K=10 | 2.32 GB | 0.43 GB | 0.45 GB | 3.20 GB | 3.74 GB | +1.39 GB |
+| dynamic-k long K=12 | 2.36 GB | 0.43 GB | 0.45 GB | 3.24 GB | 3.70 GB | +1.43 GB |
 
 Measured deltas by component:
 
 | Run | Target Verify Delta | Draft Decode Delta | Draft Extend Delta | Total Graph Delta | Final Available Delta |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| dynamic-k long K=6 | +0.20 GB | -0.02 GB | +0.07 GB | +0.25 GB | -0.29 GB |
-| dynamic-k long K=8 | +0.25 GB | -0.02 GB | +0.06 GB | +0.29 GB | -0.32 GB |
-| dynamic-k long K=10 | +0.31 GB | +0.00 GB | +0.09 GB | +0.40 GB | -0.40 GB |
-| dynamic-k long K=12 | +0.35 GB | +0.00 GB | +0.09 GB | +0.44 GB | -0.44 GB |
+| dynamic-k long K=6 | +1.07 GB | -0.02 GB | +0.19 GB | +1.24 GB | -1.28 GB |
+| dynamic-k long K=8 | +1.12 GB | -0.02 GB | +0.18 GB | +1.28 GB | -1.31 GB |
+| dynamic-k long K=10 | +1.18 GB | +0.00 GB | +0.21 GB | +1.39 GB | -1.39 GB |
+| dynamic-k long K=12 | +1.22 GB | +0.00 GB | +0.21 GB | +1.43 GB | -1.43 GB |
 
 Observed trend:
 
+- The fixed cost of retaining both K=4 and long-K FlashInfer plans is about
+  `+1.24 GB/GPU` at K=6 relative to standalone K=4.
 - Increasing long-suffix K from 6 to 12 raises total CUDA graph memory from
-  `2.06 GB/GPU` to `2.25 GB/GPU`.
-- Compared with standalone K=4, the measured extra graph memory is about
-  `+0.25 GB/GPU` at K=6 and `+0.44 GB/GPU` at K=12.
+  `3.05 GB/GPU` to `3.24 GB/GPU`; K=8 adds only `0.04 GB/GPU` over K=6.
 - Most of the growth comes from the target verify CUDA graph. Draft decode is
-  effectively unchanged, and draft extend grows only slightly.
+  effectively unchanged, and draft extend adds about `0.18-0.21 GB/GPU`.
 
 ## Automated Sweep
 
