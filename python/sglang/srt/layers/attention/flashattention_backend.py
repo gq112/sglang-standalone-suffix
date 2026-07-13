@@ -320,7 +320,15 @@ class FlashAttentionBackend(AttentionBackend):
         self.max_context_len = model_runner.model_config.context_len
         self.device = model_runner.device
         self.decode_cuda_graph_metadata = {}
-        self.target_verify_metadata = {}
+        # Target-verify CUDA graphs are shape-sensitive with respect to both
+        # batch size and the number of verified tokens per request. Dynamic-K
+        # speculative decoding can use multiple widths in the same server, so
+        # keep the reusable buffers and captured metadata separate and key the
+        # latter by (batch_size, draft_token_num).
+        self.target_verify_cuda_graph_state = {}
+        self.target_verify_cuda_graph_metadata = {}
+        self.draft_extend_cuda_graph_state = {}
+        self.draft_extend_cuda_graph_metadata = {}
         self.req_to_token = model_runner.req_to_token_pool.req_to_token
         self.kv_cache_dtype = model_runner.kv_cache_dtype
         self.kv_cache_dtype_str = model_runner.server_args.kv_cache_dtype
@@ -337,6 +345,17 @@ class FlashAttentionBackend(AttentionBackend):
         self.speculative_num_draft_tokens = (
             model_runner.server_args.speculative_num_draft_tokens
         )
+        self.target_verify_widths = {self.speculative_num_draft_tokens}
+        if (
+            model_runner.server_args.speculative_dynamic_k_enable
+            and model_runner.server_args.speculative_suffix_enable
+        ):
+            self.target_verify_widths.update(
+                [
+                    model_runner.server_args.speculative_normal_draft_token_num,
+                    model_runner.server_args.speculative_long_suffix_draft_token_num,
+                ]
+            )
         self.speculative_step_id = speculative_step_id
 
         self.fa_impl_ver = fa_impl_ver
@@ -361,6 +380,14 @@ class FlashAttentionBackend(AttentionBackend):
         self.num_splits = (
             1 if model_runner.server_args.enable_deterministic_inference else 0
         )
+
+    def _get_target_verify_draft_token_num(self, spec_info: Optional[SpecInput]) -> int:
+        """Return the actual verify width for the current speculative sub-batch."""
+        if spec_info is not None:
+            draft_token_num = getattr(spec_info, "draft_token_num", None)
+            if draft_token_num is not None:
+                return int(draft_token_num)
+        return self.speculative_num_draft_tokens
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         """Initialize forward metadata hence all layers in the forward pass can reuse it."""
@@ -458,19 +485,21 @@ class FlashAttentionBackend(AttentionBackend):
             # TODO: we need to test this part for llama 4 eagle case
             self._init_local_attn_metadata(forward_batch, metadata, device)
         elif forward_batch.forward_mode.is_target_verify():
+            draft_token_num = self._get_target_verify_draft_token_num(
+                forward_batch.spec_info
+            )
             if self.topk <= 1:
                 metadata.cache_seqlens_int32 = (
-                    forward_batch.seq_lens + self.speculative_num_draft_tokens
+                    forward_batch.seq_lens + draft_token_num
                 ).to(torch.int32)
-                metadata.max_seq_len_q = self.speculative_num_draft_tokens
+                metadata.max_seq_len_q = draft_token_num
                 metadata.max_seq_len_k = (
-                    forward_batch.seq_lens_cpu.max().item()
-                    + self.speculative_num_draft_tokens
+                    forward_batch.seq_lens_cpu.max().item() + draft_token_num
                 )
                 metadata.cu_seqlens_q = torch.arange(
                     0,
-                    batch_size * self.speculative_num_draft_tokens + 1,
-                    self.speculative_num_draft_tokens,
+                    batch_size * draft_token_num + 1,
+                    draft_token_num,
                     dtype=torch.int32,
                     device=device,
                 )
@@ -1356,53 +1385,51 @@ class FlashAttentionBackend(AttentionBackend):
                 device=self.device,
             )
 
-            self.target_verify_metadata = {
-                "cache_seqlens": torch.zeros(
-                    max_bs, dtype=torch.int32, device=self.device
-                ),
-                "cu_seqlens_q": torch.arange(
-                    0,
-                    max_bs * self.speculative_num_draft_tokens + 1,
-                    step=self.speculative_num_draft_tokens,
-                    dtype=torch.int32,
-                    device=self.device,
-                ),
-                "cu_seqlens_k": torch.zeros(
-                    max_bs + 1, dtype=torch.int32, device=self.device
-                ),
-                "page_table": torch.zeros(
-                    max_bs,
-                    max_num_pages,
-                    dtype=torch.int32,
-                    device=self.device,
-                ),
-                "strided_indices": torch.arange(
-                    0, self.max_context_len, self.page_size, device=self.device
-                ),
+            self.target_verify_cuda_graph_state = {
+                draft_token_num: {
+                    "cache_seqlens": torch.zeros(
+                        max_bs, dtype=torch.int32, device=self.device
+                    ),
+                    "cu_seqlens_k": torch.zeros(
+                        max_bs + 1, dtype=torch.int32, device=self.device
+                    ),
+                    "page_table": torch.zeros(
+                        max_bs,
+                        max_num_pages,
+                        dtype=torch.int32,
+                        device=self.device,
+                    ),
+                }
+                for draft_token_num in self.target_verify_widths
             }
+            self.target_verify_cuda_graph_metadata = {}
 
-            self.draft_extend_metadata = {
-                "cache_seqlens": torch.zeros(
-                    max_bs, dtype=torch.int32, device=self.device
-                ),
-                "cu_seqlens_q": torch.zeros(
-                    max_bs + 1,
-                    dtype=torch.int32,
-                    device=self.device,
-                ),
-                "cu_seqlens_k": torch.zeros(
-                    max_bs + 1, dtype=torch.int32, device=self.device
-                ),
-                "page_table": torch.zeros(
-                    max_bs,
-                    max_num_pages,
-                    dtype=torch.int32,
-                    device=self.device,
-                ),
-                "strided_indices": torch.arange(
-                    0, self.max_context_len, self.page_size, device=self.device
-                ),
+            self.draft_extend_cuda_graph_state = {
+                draft_token_num: {
+                    "cache_seqlens": torch.zeros(
+                        max_bs, dtype=torch.int32, device=self.device
+                    ),
+                    "cu_seqlens_q": torch.zeros(
+                        max_bs + 1,
+                        dtype=torch.int32,
+                        device=self.device,
+                    ),
+                    "cu_seqlens_k": torch.zeros(
+                        max_bs + 1, dtype=torch.int32, device=self.device
+                    ),
+                    "page_table": torch.zeros(
+                        max_bs,
+                        max_num_pages,
+                        dtype=torch.int32,
+                        device=self.device,
+                    ),
+                    "strided_indices": torch.arange(
+                        0, self.max_context_len, self.page_size, device=self.device
+                    ),
+                }
+                for draft_token_num in self.target_verify_widths
             }
+            self.draft_extend_cuda_graph_metadata = {}
 
         if self.topk > 1:
             self.target_verify_metadata_topk_normal = {
@@ -1600,33 +1627,29 @@ class FlashAttentionBackend(AttentionBackend):
 
         elif forward_mode.is_target_verify():
             if self.topk <= 1:
-                metadata.cache_seqlens_int32 = self.target_verify_metadata[
-                    "cache_seqlens"
-                ][:bs]
-                metadata.cache_seqlens_int32.copy_(
-                    (seq_lens + self.speculative_num_draft_tokens)
-                )
+                draft_token_num = self._get_target_verify_draft_token_num(spec_info)
+                target_verify_state = self.target_verify_cuda_graph_state[
+                    draft_token_num
+                ]
+                metadata.cache_seqlens_int32 = target_verify_state["cache_seqlens"][:bs]
+                metadata.cache_seqlens_int32.copy_((seq_lens + draft_token_num))
 
-                metadata.max_seq_len_q = self.speculative_num_draft_tokens
-                metadata.max_seq_len_k = (
-                    seq_lens.max().item() + self.speculative_num_draft_tokens
-                )
+                metadata.max_seq_len_q = draft_token_num
+                metadata.max_seq_len_k = seq_lens.max().item() + draft_token_num
 
                 metadata.cu_seqlens_q = torch.arange(
                     0,
-                    bs * self.speculative_num_draft_tokens + 1,
-                    self.speculative_num_draft_tokens,
+                    bs * draft_token_num + 1,
+                    draft_token_num,
                     dtype=torch.int32,
                     device=device,
                 )
 
-                metadata.cu_seqlens_k = self.target_verify_metadata["cu_seqlens_k"][
-                    : (bs + 1)
-                ]
+                metadata.cu_seqlens_k = target_verify_state["cu_seqlens_k"][: bs + 1]
 
-                metadata.page_table = self.target_verify_metadata["page_table"][:bs, :]
+                metadata.page_table = target_verify_state["page_table"][:bs, :]
 
-                self.target_verify_metadata[bs] = metadata
+                self.target_verify_cuda_graph_metadata[(bs, draft_token_num)] = metadata
             else:
                 # When topk > 1, we need two specific target verify metadata, and then merge states
                 # 1. The first half of metadata for prefix tokens
@@ -1688,12 +1711,13 @@ class FlashAttentionBackend(AttentionBackend):
                     metadata.swa_spec_metadata = metadata_swa
 
         elif forward_mode.is_draft_extend():
-            metadata.cache_seqlens_int32 = self.draft_extend_metadata["cache_seqlens"][
-                :bs
+            num_tokens_per_bs = num_tokens // bs
+            draft_extend_state = self.draft_extend_cuda_graph_state[
+                num_tokens_per_bs
             ]
+            metadata.cache_seqlens_int32 = draft_extend_state["cache_seqlens"][:bs]
             metadata.cache_seqlens_int32.copy_(seq_lens)
 
-            num_tokens_per_bs = num_tokens // bs
             metadata.max_seq_len_q = num_tokens_per_bs
             metadata.max_seq_len_k = seq_lens.max().item()
 
@@ -1705,12 +1729,10 @@ class FlashAttentionBackend(AttentionBackend):
                 device=device,
             )
 
-            metadata.cu_seqlens_k = self.draft_extend_metadata["cu_seqlens_k"][
-                : (bs + 1)
-            ]
-            metadata.page_table = self.draft_extend_metadata["page_table"][:bs, :]
+            metadata.cu_seqlens_k = draft_extend_state["cu_seqlens_k"][: bs + 1]
+            metadata.page_table = draft_extend_state["page_table"][:bs, :]
 
-            self.draft_extend_metadata[bs] = metadata
+            self.draft_extend_cuda_graph_metadata[(bs, num_tokens_per_bs)] = metadata
 
         if encoder_lens is not None:
             encoder_bs = encoder_lens.numel()
@@ -1829,14 +1851,11 @@ class FlashAttentionBackend(AttentionBackend):
                 )
         elif forward_mode.is_target_verify():
             if self.topk <= 1:
-                metadata = self.target_verify_metadata[bs]
-                metadata.cache_seqlens_int32.copy_(
-                    (seq_lens + self.speculative_num_draft_tokens)
-                )
+                draft_token_num = self._get_target_verify_draft_token_num(spec_info)
+                metadata = self.target_verify_cuda_graph_metadata[(bs, draft_token_num)]
+                metadata.cache_seqlens_int32.copy_((seq_lens + draft_token_num))
 
-                metadata.max_seq_len_k = (
-                    seq_lens_cpu.max().item() + self.speculative_num_draft_tokens
-                )
+                metadata.max_seq_len_k = seq_lens_cpu.max().item() + draft_token_num
                 metadata.cu_seqlens_k[1:].copy_(
                     torch.cumsum(metadata.cache_seqlens_int32, dim=0, dtype=torch.int32)
                 )
@@ -1934,7 +1953,16 @@ class FlashAttentionBackend(AttentionBackend):
                     )
 
         elif forward_mode.is_draft_extend():
-            metadata = self.draft_extend_metadata[bs]
+            num_tokens_per_bs = getattr(
+                spec_info, "cuda_graph_num_tokens_per_bs", None
+            )
+            if num_tokens_per_bs is None:
+                raise RuntimeError(
+                    "CUDA graph draft-extend replay requires num_tokens_per_bs"
+                )
+            metadata = self.draft_extend_cuda_graph_metadata[
+                (bs, int(num_tokens_per_bs))
+            ]
             metadata.cache_seqlens_int32.copy_(seq_lens)
 
             metadata.max_seq_len_k = seq_lens_cpu.max().item()
@@ -1956,7 +1984,9 @@ class FlashAttentionBackend(AttentionBackend):
             ) // self.page_size
             page_indices = self.req_to_token[
                 req_pool_indices[:, None],
-                self.draft_extend_metadata["strided_indices"][:max_seq_pages],
+                self.draft_extend_cuda_graph_state[int(num_tokens_per_bs)][
+                    "strided_indices"
+                ][:max_seq_pages],
             ]
             metadata.page_table[:, :max_seq_pages].copy_(page_indices // self.page_size)
 
