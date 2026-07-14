@@ -142,7 +142,6 @@ for attention_backend in ${ATTENTION_BACKENDS}; do
     --speculative-normal-draft-token-num ${NORMAL_K} \
     --speculative-long-suffix-draft-token-num ${LONG_K} \
     --speculative-long-suffix-min-match-len 7 \
-    --speculative-long-suffix-max-bs 8 \
     --speculative-high-bs-threshold 10"
   run_case "${dynamic_name}" "${dynamic_command}"
   logs+=("${LOG_DIR}/${dynamic_name}.log")

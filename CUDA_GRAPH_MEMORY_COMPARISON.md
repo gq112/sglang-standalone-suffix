@@ -134,7 +134,6 @@ python -m sglang.launch_server \
   --speculative-normal-draft-token-num 4 \
   --speculative-long-suffix-draft-token-num ${K} \
   --speculative-long-suffix-min-match-len 7 \
-  --speculative-long-suffix-max-bs 8 \
   --speculative-high-bs-threshold 10 \
   --cuda-graph-max-bs 16 \
   --tp-size 4 \

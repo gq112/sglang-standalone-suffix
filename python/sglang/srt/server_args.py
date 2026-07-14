@@ -391,7 +391,6 @@ class ServerArgs:
     speculative_normal_draft_token_num: int = 4
     speculative_long_suffix_draft_token_num: int = 8
     speculative_long_suffix_min_match_len: int = 7
-    speculative_long_suffix_max_bs: int = 8
     speculative_high_bs_threshold: int = 10
     # For ngram only
     speculative_ngram_min_match_window_size: int = 1
@@ -2932,12 +2931,6 @@ class ServerArgs:
             type=int,
             default=ServerArgs.speculative_long_suffix_min_match_len,
             help="Minimum suffix proposal match length required to use the long suffix verify width.",
-        )
-        parser.add_argument(
-            "--speculative-long-suffix-max-bs",
-            type=int,
-            default=ServerArgs.speculative_long_suffix_max_bs,
-            help="Maximum long-suffix sub-batch size allowed to use the long suffix verify width.",
         )
         parser.add_argument(
             "--speculative-high-bs-threshold",

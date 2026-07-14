@@ -124,7 +124,6 @@ for long_k in ${LONG_K_LIST}; do
     --speculative-normal-draft-token-num ${NORMAL_K} \
     --speculative-long-suffix-draft-token-num ${long_k} \
     --speculative-long-suffix-min-match-len 7 \
-    --speculative-long-suffix-max-bs 8 \
     --speculative-high-bs-threshold 10"
 
   run_case "cuda_graph_dynamic_k_${long_k}" "${DYNAMIC_CMD}"

@@ -63,7 +63,6 @@ class StandaloneWorker(EAGLEWorker):
         self._long_suffix_min_match_len = (
             server_args.speculative_long_suffix_min_match_len
         )
-        self._long_suffix_max_bs = server_args.speculative_long_suffix_max_bs
         self._high_bs_threshold = server_args.speculative_high_bs_threshold
         if server_args.speculative_suffix_enable:
             self._init_suffix_proposer(target_worker)

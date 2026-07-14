@@ -80,7 +80,6 @@ New flags:
 --speculative-normal-draft-token-num 4
 --speculative-long-suffix-draft-token-num 8
 --speculative-long-suffix-min-match-len 7
---speculative-long-suffix-max-bs 8
 --speculative-high-bs-threshold 10
 ```
 
@@ -93,7 +92,6 @@ Recommended starting point:
 --speculative-normal-draft-token-num 4 \
 --speculative-long-suffix-draft-token-num 8 \
 --speculative-long-suffix-min-match-len 7 \
---speculative-long-suffix-max-bs 8 \
 --speculative-high-bs-threshold 10
 ```
 

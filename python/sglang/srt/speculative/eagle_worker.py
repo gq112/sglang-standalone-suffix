@@ -125,7 +125,6 @@ class EAGLEWorker(TpModelWorker):
         self._long_suffix_min_match_len = (
             server_args.speculative_long_suffix_min_match_len
         )
-        self._long_suffix_max_bs = server_args.speculative_long_suffix_max_bs
         self._high_bs_threshold = server_args.speculative_high_bs_threshold
 
         if server_args.speculative_suffix_enable:
@@ -579,8 +578,6 @@ class EAGLEWorker(TpModelWorker):
                 continue
             indices.append(idx)
 
-        if len(indices) > self._long_suffix_max_bs:
-            return []
         return indices
 
     def _build_linear_suffix_verify_input(
