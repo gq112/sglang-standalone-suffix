@@ -212,3 +212,34 @@ Override values with environment variables:
 ```bash
 LONG_K_LIST="5 6 8 10 12" PORT=30001 bash scripts/run_cuda_graph_memory_sweep.sh
 ```
+
+## FlashInfer vs FA3 Comparison
+
+After changing FA3 to retain separate K=4 and K=8 CUDA-graph metadata, use the
+following comparison script to remeasure both attention backends with identical
+model, TP, concurrency, and sampling settings:
+
+```bash
+bash scripts/run_attention_backend_memory_comparison.sh
+```
+
+It runs these four cases and writes one startup log per case under
+`logs/attention_backend_memory/`:
+
+| Case | Attention backend | Verify widths |
+| --- | --- | --- |
+| `flashinfer_static_k4` | FlashInfer | K=4 |
+| `flashinfer_dynamic_k4_8` | FlashInfer | K=4 and K=8 |
+| `fa3_static_k4` | FlashAttention 3 | K=4 |
+| `fa3_dynamic_k4_8` | FlashAttention 3 | K=4 and K=8 |
+
+All cases set `--sampling-backend pytorch` so FlashInfer sampling kernels do not
+affect the attention-backend comparison. Override paths and test dimensions as
+needed:
+
+```bash
+MODEL_PATH=/models/target \
+DRAFT_MODEL_PATH=/models/draft \
+TP_SIZE=4 CUDA_GRAPH_MAX_BS=16 NORMAL_K=4 LONG_K=8 \
+bash scripts/run_attention_backend_memory_comparison.sh
+```
