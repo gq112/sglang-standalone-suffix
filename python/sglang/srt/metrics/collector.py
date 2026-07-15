@@ -278,6 +278,31 @@ class SchedulerMetricsCollector:
             labelnames=labels.keys(),
             multiprocess_mode="mostrecent",
         )
+        self.suffix_proposal_total = Counter(
+            name="sglang:suffix_proposal_total",
+            documentation="The number of suffix cache proposals returned by the suffix proposer.",
+            labelnames=labels.keys(),
+        )
+        self.suffix_override_total = Counter(
+            name="sglang:suffix_override_total",
+            documentation="The number of requests whose normal K=4 draft was overridden by suffix tokens.",
+            labelnames=labels.keys(),
+        )
+        self.dynamic_k8_request_total = Counter(
+            name="sglang:dynamic_k8_request_total",
+            documentation="The number of requests verified through the dynamic K=8 suffix path.",
+            labelnames=labels.keys(),
+        )
+        self.dynamic_k8_output_token_total = Counter(
+            name="sglang:dynamic_k8_output_token_total",
+            documentation="Output tokens committed by dynamic K=8 verification, including each request's target token.",
+            labelnames=labels.keys(),
+        )
+        self.dynamic_k8_draft_token_total = Counter(
+            name="sglang:dynamic_k8_draft_token_total",
+            documentation="K=8 verification tokens submitted to the target model.",
+            labelnames=labels.keys(),
+        )
 
         # Retract
         self.num_retracted_reqs = Gauge(
@@ -581,6 +606,26 @@ class SchedulerMetricsCollector:
 
     def observe_queue_time(self, latency: float) -> None:
         self._log_histogram(self.queue_time, latency)
+
+    def observe_suffix_stats(
+        self,
+        proposal_count: int,
+        override_count: int,
+        long_request_count: int,
+        long_output_token_count: int,
+        long_draft_token_count: int,
+    ) -> None:
+        """Publish cumulative suffix/dynamic-K counters for one scheduler batch."""
+        metric_values = (
+            (self.suffix_proposal_total, proposal_count),
+            (self.suffix_override_total, override_count),
+            (self.dynamic_k8_request_total, long_request_count),
+            (self.dynamic_k8_output_token_total, long_output_token_count),
+            (self.dynamic_k8_draft_token_total, long_draft_token_count),
+        )
+        for metric, value in metric_values:
+            if value:
+                metric.labels(**self.labels).inc(value)
 
     def log_stats(self, stats: SchedulerStats) -> None:
         self._log_gauge(self.num_running_reqs, stats.num_running_reqs)

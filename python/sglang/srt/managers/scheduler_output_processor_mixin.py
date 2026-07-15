@@ -310,6 +310,14 @@ class SchedulerOutputProcessorMixin:
                 result.num_accepted_tokens,
                 result.num_draft_tokens,
             )
+            if self.enable_metrics:
+                self.metrics_collector.observe_suffix_stats(
+                    result.suffix_proposal_count,
+                    result.suffix_override_count,
+                    result.suffix_long_request_count,
+                    result.suffix_long_output_token_count,
+                    result.suffix_long_draft_token_count,
+                )
 
         self.token_to_kv_pool_allocator.free_group_begin()
 

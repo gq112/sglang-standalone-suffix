@@ -110,6 +110,11 @@ class EAGLEWorker(TpModelWorker):
         )
         self._suffix_proposer: Optional[SuffixDecodingProposer] = None
         self._last_suffix_status: Optional[str] = None
+        self._suffix_proposal_count = 0
+        self._suffix_override_count = 0
+        self._suffix_long_request_count = 0
+        self._suffix_long_output_token_count = 0
+        self._suffix_long_draft_token_count = 0
         self._dynamic_k_enable = (
             server_args.speculative_dynamic_k_enable
             and server_args.speculative_suffix_enable
@@ -297,6 +302,11 @@ class EAGLEWorker(TpModelWorker):
         """
         # reset per-batch suffix status
         self._last_suffix_status = None
+        self._suffix_proposal_count = 0
+        self._suffix_override_count = 0
+        self._suffix_long_request_count = 0
+        self._suffix_long_output_token_count = 0
+        self._suffix_long_draft_token_count = 0
         if self._suffix_proposer:
             self._suffix_prepare_batch(batch)
 
@@ -350,6 +360,11 @@ class EAGLEWorker(TpModelWorker):
                 num_draft_tokens=num_draft_tokens,
                 can_run_cuda_graph=can_run_cuda_graph,
                 suffix_status=self._last_suffix_status,
+                suffix_proposal_count=self._suffix_proposal_count,
+                suffix_override_count=self._suffix_override_count,
+                suffix_long_request_count=self._suffix_long_request_count,
+                suffix_long_output_token_count=self._suffix_long_output_token_count,
+                suffix_long_draft_token_count=self._suffix_long_draft_token_count,
             )
 
     def _get_num_verify_tokens(
@@ -537,6 +552,7 @@ class EAGLEWorker(TpModelWorker):
             top_scores_index[idx] = seq_range
         if applied > 0:
             self._last_suffix_status = f"override x{applied}/{len(proposals)}"
+        self._suffix_override_count = applied
 
     def _get_suffix_proposals(
         self, batch: ScheduleBatch
@@ -544,7 +560,11 @@ class EAGLEWorker(TpModelWorker):
         if not self._suffix_proposer:
             return None
         try:
-            return self._suffix_proposer.propose(batch)
+            proposals = self._suffix_proposer.propose(batch)
+            self._suffix_proposal_count = sum(
+                proposal is not None for proposal in proposals
+            )
+            return proposals
         except Exception as exc:
             logger.warning("Suffix proposer failed: %s", exc)
             self._suffix_proposer = None
@@ -578,6 +598,7 @@ class EAGLEWorker(TpModelWorker):
                 continue
             indices.append(idx)
 
+        self._suffix_long_request_count = len(indices)
         return indices
 
     def _build_linear_suffix_verify_input(
@@ -1344,6 +1365,14 @@ class EAGLEWorker(TpModelWorker):
                 suffix_batch, spec_info.long_suffix
             )
             verify_output.can_run_cuda_graph = can_run_cuda_graph
+            self._suffix_long_output_token_count += sum(
+                int(accept_length) + 1
+                for accept_length in verify_output.accept_length_per_req_cpu
+            )
+            self._suffix_long_draft_token_count += (
+                len(spec_info.long_suffix_indices)
+                * spec_info.long_suffix.draft_token_num
+            )
             results.append(
                 (
                     spec_info.long_suffix_indices,

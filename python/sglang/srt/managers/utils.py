@@ -28,6 +28,13 @@ class GenerationBatchResult:
     num_draft_tokens: Optional[int] = None
     can_run_cuda_graph: bool = False
     suffix_status: Optional[str] = None
+    # Suffix/dynamic-K observability. These are per scheduler batch and are
+    # consumed by the TP0 scheduler metrics collector.
+    suffix_proposal_count: int = 0
+    suffix_override_count: int = 0
+    suffix_long_request_count: int = 0
+    suffix_long_output_token_count: int = 0
+    suffix_long_draft_token_count: int = 0
 
     # For output processing
     extend_input_len_per_req: Optional[List[int]] = None
