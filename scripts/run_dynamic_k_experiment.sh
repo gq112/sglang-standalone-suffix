@@ -37,8 +37,8 @@ ATTENTION_BACKEND="${ATTENTION_BACKEND:-fa3}"
 PRELOAD_LIBSTDCXX="${PRELOAD_LIBSTDCXX:-/usr/lib/x86_64-linux-gnu/libstdc++.so.6}"
 
 # The measured workload is kept identical to the command supplied by the user.
-MEASURE_PROMPTS=( ${MEASURE_PROMPTS:-40 80 96 120} )
-MEASURE_CONCURRENCY=( ${MEASURE_CONCURRENCY:-10 20 24 30} )
+MEASURE_PROMPTS=( ${MEASURE_PROMPTS:-40 80 96} )
+MEASURE_CONCURRENCY=( ${MEASURE_CONCURRENCY:-10 20 24} )
 WARMUP_PROMPTS="${WARMUP_PROMPTS:-120}"
 WARMUP_CONCURRENCY="${WARMUP_CONCURRENCY:-8}"
 FIXED_OUTPUT_LEN="${FIXED_OUTPUT_LEN:-2048}"
@@ -92,12 +92,18 @@ snapshot_metrics() {
 run_client() {
     local log_file="$1"
     shift
+    local stage_dir="${CURRENT_DIR}/${log_file%.log}_artifacts"
+    local resolved_dataset_path="${DATASET_PATH}"
+    if [[ "${resolved_dataset_path}" != /* ]]; then
+        resolved_dataset_path="${SPEC_FORGE_DIR}/${resolved_dataset_path}"
+    fi
+    mkdir -p "${stage_dir}"
     local args=(
-        python ./test_req.py
+        python "${TEST_SCRIPT}"
         --base-url "${CLIENT_BASE_URL}"
         --model "${MODEL_PATH}"
         --dataset-name "${DATASET_NAME}"
-        --dataset-path "${DATASET_PATH}"
+        --dataset-path "${resolved_dataset_path}"
         --tokenizer-path "${TOKENIZER_PATH}"
         --temperature 0.0
         --fixed-output-len "${FIXED_OUTPUT_LEN}"
@@ -108,7 +114,7 @@ run_client() {
     fi
     args+=("$@")
     (
-        cd "${SPEC_FORGE_DIR}"
+        cd "${stage_dir}"
         "${args[@]}"
     ) 2>&1 | tee "${CURRENT_DIR}/${log_file}"
 }
@@ -170,10 +176,19 @@ run_experiment() {
         --max-concurrency "${WARMUP_CONCURRENCY}"
     snapshot_metrics "after_k8_probe"
 
-    run_client "measurement.log" \
-        --num-prompts "${MEASURE_PROMPTS[@]}" \
-        --max-concurrency "${MEASURE_CONCURRENCY[@]}"
-    snapshot_metrics "after_measurement"
+    if [[ "${#MEASURE_PROMPTS[@]}" -ne "${#MEASURE_CONCURRENCY[@]}" ]]; then
+        echo "MEASURE_PROMPTS and MEASURE_CONCURRENCY must have the same length" >&2
+        return 1
+    fi
+    local i
+    for i in "${!MEASURE_CONCURRENCY[@]}"; do
+        local concurrency="${MEASURE_CONCURRENCY[$i]}"
+        local prompts="${MEASURE_PROMPTS[$i]}"
+        run_client "measurement_bs${concurrency}_n${prompts}.log" \
+            --num-prompts "${prompts}" \
+            --max-concurrency "${concurrency}"
+        snapshot_metrics "after_measurement_bs${concurrency}"
+    done
 
     cleanup_server
 }
@@ -187,7 +202,8 @@ Dynamic-K experiment results
 ============================
 
 Each configuration has a server.log, warmup.log, k8_probe.log,
-measurement.log, and Prometheus snapshots.
+per-concurrency measurement logs, Prometheus snapshots, and isolated CSV
+artifacts under *_artifacts/.
 
 Interpret the counters in metrics_after_k8_probe_focus.prom (filter tp_rank="0"):
   sglang:dynamic_k8_request_total
@@ -202,8 +218,9 @@ Interpret the counters in metrics_after_k8_probe_focus.prom (filter tp_rank="0")
 Primary comparisons:
   standalone_k4 vs no_speculation: standalone speculative-decoding benefit.
   suffix_static_k4 vs standalone_k4: suffix-cache net benefit/cost.
-  dynamic_k4_k8 vs suffix_static_k4: dynamic-K net benefit. Use k8_probe
-  (concurrency 8) for this comparison; batches >=20 intentionally disable K=8.
+  dynamic_k4_k8 vs suffix_static_k4: dynamic-K net benefit. Use the individual
+  measurement_bs10, measurement_bs20, and measurement_bs24 results. Batches
+  >=20 disable K=8 until the decode tail falls below 20.
 EOF
 
 run_experiment "no_speculation"

@@ -80,7 +80,7 @@ New flags:
 --speculative-normal-draft-token-num 4
 --speculative-long-suffix-draft-token-num 8
 --speculative-long-suffix-min-match-len 7
---speculative-high-bs-threshold 10
+--speculative-high-bs-threshold 20
 ```
 
 Recommended starting point:
@@ -92,14 +92,89 @@ Recommended starting point:
 --speculative-normal-draft-token-num 4 \
 --speculative-long-suffix-draft-token-num 8 \
 --speculative-long-suffix-min-match-len 7 \
---speculative-high-bs-threshold 10
+--speculative-high-bs-threshold 20
 ```
 
 Interpretation:
 
 - standalone drafts 3 tokens by default (`K=4`).
 - long suffix hits can verify 7 suffix tokens (`K=8`).
-- at batch size 10 or above, dynamic long suffix is disabled and all requests stay on K=4.
+- with the current benchmark setting `--speculative-high-bs-threshold 20`, an
+  active decode batch below 20 can use K=8; batches at or above 20 use K=4.
+
+## Benchmark Record (2026-07-15)
+
+### Scope and method
+
+The operational comparison focuses on concurrent request counts **10, 20, and
+24**. Batch 30 is only a saturation reference and is not a dynamic-K decision
+point. All configurations use Qwen2.5-72B-Instruct-AWQ, Qwen3-0.6B draft
+model, TP=4, FA3, `max_running_requests=32`, `mem_fraction_static=0.72`, and
+greedy sampling (`temperature=0`).
+
+| Name | Standalone draft | Suffix cache | Dynamic K |
+| --- | --- | --- | --- |
+| No speculation | No | No | No |
+| Standalone K=4 | Yes | No | No |
+| Suffix static K=4 | Yes | Yes | No |
+| Dynamic K=4/8 | Yes | Yes | Yes |
+
+### End-to-end output throughput
+
+The earlier online comparison recorded the following total output throughput
+(token/s). All rows use the same workload within their respective batch size.
+
+| Concurrent requests | No speculation | Standalone K=4 | Suffix static K=4 | Dynamic K=4/8 |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 221.68 | **291.96** | 286.13 | 288.37 |
+| 20 | 302.09 | **410.38** | 397.50 | 394.04 |
+| 24 | 333.14 | **438.49** | 416.48 | 413.56 |
+
+At these loads, standalone K=4 is the current end-to-end throughput baseline.
+Dynamic K is faster than no speculation, but has not yet exceeded standalone
+K=4 because suffix lookup and serial K=4/K=8 sub-batch verification have a
+cost.
+
+### Dynamic-K instrumentation run
+
+The 2026-07-15 warm-cache run added suffix/K=8 counters. The K=8 probe used
+120 prompts at concurrency 8 after an identical concurrency-8 warmup; it is a
+mechanism check rather than a 10--24 end-to-end result.
+
+| Phase | Suffix proposals | K=4 suffix overrides | K=8 request rounds | K=8 committed tokens | K=8 verify tokens | K=8 efficiency |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Warmup | 17,328 | 3,440 | 5,293 | 36,918 | 42,200 | 0.875 |
+| K=8 probe | 15,497 | 3,332 | 6,411 | 45,164 | 50,688 | 0.891 |
+| Measurement aggregate* | 59,146 | 40,338 | 5,948 | 41,516 | 46,320 | 0.896 |
+
+`K=8 efficiency = committed tokens / K=8 verify tokens`. During the probe,
+K=8 commits about `45,164 / 6,411 = 7.04` tokens per K=8 request round. This
+confirms that the repeated-data workload produces real, high-quality long
+suffix hits; poor K=8 acceptance is not the reason for the end-to-end result.
+
+\*The first instrumentation script aggregated the 10/20/24/30 measurement
+pass into one counter snapshot. The updated script records separate 10, 20,
+and 24 snapshots, which are the values to use for future conclusions.
+
+### Decision criteria for 10--24 concurrency
+
+At concurrency 10, K=8 can participate throughout the active decode batch. At
+concurrency 20 and 24, the policy falls back to K=4 while the full batch is at
+or above the threshold; K=8 may only appear during the request tail as the
+active batch shrinks. Record, for each concurrency separately:
+
+1. `dynamic_k8_request_total`: whether K=8 actually participated.
+2. `dynamic_k8_output_token_total / dynamic_k8_draft_token_total`: K=8
+   verification efficiency.
+3. Output throughput, mean TPOT, and mean ITL for dynamic K versus suffix
+   static K=4.
+
+Dynamic K is a net win only if its K=8 hit quality remains high **and** the
+dynamic-K result exceeds suffix static K=4 in the same 10--24 concurrency row.
+The experiment script writes this comparison automatically as
+`throughput_comparison.tsv` and `throughput_comparison.md` in its results
+directory, parsing the terminal summary emitted by `test_req.py` after each
+concurrency run.
 
 ## Correctness Boundaries
 
