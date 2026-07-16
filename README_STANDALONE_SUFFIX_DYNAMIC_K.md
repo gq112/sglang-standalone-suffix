@@ -252,6 +252,22 @@ recovers 11.52% throughput versus K=4/4, but almost every remaining parent
 batch is still split into two serial target forwards. This directly explains
 why high K=8 acceptance does not yet turn into a net production gain.
 
+### Current rollout policy: homogeneous K=8 only
+
+The initial mixed-batch implementation above is retained as the measurement
+baseline, but it is no longer selected in the serving path. A batch now uses
+K=8 only when **every active request** qualifies for the long-suffix policy.
+If even one request does not qualify, the whole batch uses the regular K=4
+path (including ordinary K=4 suffix overrides). This guarantees one target
+verify forward per scheduler batch and removes split/merge overhead.
+
+It deliberately trades K=8 coverage for predictable throughput: K=8 may be
+rare under heterogeneous online traffic, but it cannot degrade a mixed batch
+by creating an additional serial target forward. Re-run the same experiment
+to compare this policy against suffix static K=4. The expected counters are
+`dynamic_k_mixed_verify_batch_total = 0`; any nonzero K=8 counters then come
+from homogeneous long-suffix batches.
+
 ## Correctness Boundaries
 
 The first implementation intentionally keeps the dynamic-K path conservative:

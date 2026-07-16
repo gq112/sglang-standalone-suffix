@@ -1097,6 +1097,14 @@ class EAGLEWorker(TpModelWorker):
 
         proposals = self._get_suffix_proposals(batch)
         long_suffix_indices = self._select_long_suffix_indices(batch, proposals)
+        # A mixed K=4/K=8 batch needs two serial target verify forwards and a
+        # merge.  The measured split overhead is larger than the K=8 benefit
+        # for the current 10--24 concurrency workload.  Keep a single target
+        # verify forward unless every request in this batch qualifies for the
+        # long suffix path.  Requests that fall back here can still receive a
+        # regular K=4 suffix override below.
+        if 0 < len(long_suffix_indices) < batch.batch_size():
+            long_suffix_indices = []
         long_suffix_set = set(long_suffix_indices)
         self._apply_suffix_overrides(
             batch,
