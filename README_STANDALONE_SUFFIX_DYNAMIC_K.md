@@ -280,6 +280,17 @@ verify forward. Fixed-K K=4/K=8 paths keep their existing graph behavior.
 The next stage, if eager ragged throughput is beneficial, is a bounded graph
 cache keyed by `(batch_size, K=8 request count)`.
 
+### GSM8K accuracy regression
+
+Run `scripts/run_dynamic_k_gsm8k_accuracy.sh` on the serving host to compare
+suffix static K=4 with FA3 ragged K=4/8. It defaults to
+`/workspaces/SpecForge/gsm8k.jsonl`, uses greedy decoding, and writes
+`accuracy_comparison.md` below its result directory. The dynamic run first
+warms the cache with even-indexed questions, then evaluates the original
+question order so cached and uncached requests are interleaved in a batch.
+Require `dynamic_k8_request_total > 0` in the final metrics snapshot; otherwise
+the reported score did not exercise K=8/ragged verification.
+
 ## Correctness Boundaries
 
 The first implementation intentionally keeps the dynamic-K path conservative:
