@@ -290,8 +290,10 @@ warms the cache with even-indexed questions, then evaluates the original
 question order so cached and uncached requests are interleaved in a batch.
 Require `dynamic_k8_request_total > 0` in the final metrics snapshot; otherwise
 the reported score did not exercise K=8/ragged verification.
-The JSONL must be the labeled GSM8K format containing both `question` and
-`answer`; a SpecForge prompt-only file with `turns` cannot produce accuracy.
+If the JSONL contains `question` and `answer`, the script reports GSM8K
+accuracy. A prompt-only SpecForge JSONL with `turns` automatically uses the
+same static-K=4 output as the temperature-zero baseline and writes
+`greedy_output_comparison.md`; any token-id/text mismatch fails the run.
 
 ## Correctness Boundaries
 

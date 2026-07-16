@@ -134,27 +134,43 @@ run_eval() {
     ) 2>&1 | tee "${CURRENT_DIR}/${log_file}"
 }
 
+run_prompt_comparison_client() {
+    local data_path="$1"
+    local num_prompts="$2"
+    local output_path="$3"
+    python "${SGLANG_DIR}/scripts/check_greedy_output_consistency.py" run \
+        --base-url "${CLIENT_BASE_URL}" \
+        --dataset-path "${data_path}" \
+        --num-prompts "${num_prompts}" \
+        --max-concurrency "${PARALLEL}" \
+        --max-new-tokens "${MAX_NEW_TOKENS}" \
+        --output "${output_path}" | tee "${CURRENT_DIR}/greedy_compare.log"
+}
+
 require_file "${GSM8K_PATH}"
 require_file "${SGLANG_DIR}/python/sglang/version.py"
+require_file "${SGLANG_DIR}/scripts/check_greedy_output_consistency.py"
 mkdir -p "${RESULTS_DIR}"
+
+DATASET_MODE="$(python - "${GSM8K_PATH}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+first_line = next(line for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines() if line.strip())
+record = json.loads(first_line)
+print("labeled" if "question" in record and "answer" in record else "prompt_only")
+PY
+)"
+echo "Dataset mode: ${DATASET_MODE}"
 
 WARMUP_PATH="${RESULTS_DIR}/gsm8k_warmup_interleaved.jsonl"
 WARMUP_QUESTIONS="$(python - "${GSM8K_PATH}" "${WARMUP_PATH}" "${NUM_QUESTIONS}" "${NUM_SHOTS}" <<'PY'
-import json
 import sys
 from pathlib import Path
 
 source, destination, limit, num_shots = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 lines = Path(source).read_text(encoding="utf-8").splitlines()
-records = [json.loads(line) for line in lines[:limit]]
-if len(records) < num_shots:
-    raise SystemExit(f"GSM8K dataset needs at least {num_shots} records, got {len(records)}")
-if any("question" not in record or "answer" not in record for record in records):
-    raise SystemExit(
-        "GSM8K accuracy needs labeled JSONL records with both 'question' and "
-        "'answer'. The supplied file is prompt-only (for example {'turns': [...]}) "
-        "and cannot be scored. Set GSM8K_PATH to the labeled GSM8K test.jsonl."
-    )
 selected = [
     line
     for index, line in enumerate(lines[:limit])
@@ -167,7 +183,11 @@ PY
 
 echo "========== suffix_static_k4 =========="
 start_server suffix_static_k4
-run_eval "${GSM8K_PATH}" "${NUM_QUESTIONS}" accuracy.log
+if [[ "${DATASET_MODE}" == "labeled" ]]; then
+    run_eval "${GSM8K_PATH}" "${NUM_QUESTIONS}" accuracy.log
+else
+    run_prompt_comparison_client "${GSM8K_PATH}" "${NUM_QUESTIONS}" "${CURRENT_DIR}/outputs.jsonl"
+fi
 snapshot_metrics after_accuracy
 cleanup_server
 
@@ -178,12 +198,21 @@ start_server ragged_dynamic_k4_k8 \
     --speculative-long-suffix-draft-token-num 8 \
     --speculative-long-suffix-min-match-len 7 \
     --speculative-high-bs-threshold 20
-run_eval "${WARMUP_PATH}" "${WARMUP_QUESTIONS}" warmup_interleaved.log
+if [[ "${DATASET_MODE}" == "labeled" ]]; then
+    run_eval "${WARMUP_PATH}" "${WARMUP_QUESTIONS}" warmup_interleaved.log
+else
+    run_prompt_comparison_client "${WARMUP_PATH}" "${WARMUP_QUESTIONS}" "${CURRENT_DIR}/warmup_outputs.jsonl"
+fi
 snapshot_metrics after_warmup
-run_eval "${GSM8K_PATH}" "${NUM_QUESTIONS}" accuracy.log
+if [[ "${DATASET_MODE}" == "labeled" ]]; then
+    run_eval "${GSM8K_PATH}" "${NUM_QUESTIONS}" accuracy.log
+else
+    run_prompt_comparison_client "${GSM8K_PATH}" "${NUM_QUESTIONS}" "${CURRENT_DIR}/outputs.jsonl"
+fi
 snapshot_metrics after_accuracy
 cleanup_server
 
+if [[ "${DATASET_MODE}" == "labeled" ]]; then
 python - "${RESULTS_DIR}" <<'PY'
 import re
 import sys
@@ -213,5 +242,11 @@ report.write_text(
 )
 print(report.read_text(encoding="utf-8"), end="")
 PY
+else
+    python "${SGLANG_DIR}/scripts/check_greedy_output_consistency.py" compare \
+        --reference "${RESULTS_DIR}/suffix_static_k4/outputs.jsonl" \
+        --candidate "${RESULTS_DIR}/ragged_dynamic_k4_k8/outputs.jsonl" \
+        --report "${RESULTS_DIR}/greedy_output_comparison.md"
+fi
 
 echo "Completed. Results: ${RESULTS_DIR}"
