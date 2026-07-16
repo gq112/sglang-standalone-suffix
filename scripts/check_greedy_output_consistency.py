@@ -5,9 +5,29 @@ import argparse
 import concurrent.futures
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import requests
+
+
+def extract_boxed_answer(text: Any) -> Optional[str]:
+    """Return the final balanced ``\\boxed{...}`` answer, if present."""
+    if not isinstance(text, str):
+        return None
+    marker = r"\boxed{"
+    start = text.rfind(marker)
+    if start < 0:
+        return None
+    position = start + len(marker)
+    depth = 1
+    for end in range(position, len(text)):
+        if text[end] == "{":
+            depth += 1
+        elif text[end] == "}":
+            depth -= 1
+            if depth == 0:
+                return " ".join(text[position:end].split())
+    return None
 
 
 def get_prompt(record: dict[str, Any]) -> str:
@@ -89,13 +109,13 @@ def run(args: argparse.Namespace) -> None:
 def compare(args: argparse.Namespace) -> None:
     reference = [json.loads(line) for line in args.reference.read_text(encoding="utf-8").splitlines()]
     candidate = [json.loads(line) for line in args.candidate.read_text(encoding="utf-8").splitlines()]
-    mismatches = []
+    exact_mismatches = []
     first_difference = None
     for index, (left, right) in enumerate(zip(reference, candidate)):
         left_value = left.get("output_ids") or left.get("text")
         right_value = right.get("output_ids") or right.get("text")
         if left_value != right_value:
-            mismatches.append(index)
+            exact_mismatches.append(index)
             if first_difference is None:
                 if isinstance(left_value, list) and isinstance(right_value, list):
                     first_token = next(
@@ -117,14 +137,47 @@ def compare(args: argparse.Namespace) -> None:
                     )
                 else:
                     first_difference = f"- First difference: request {index} text differs\n"
-    if len(reference) != len(candidate):
-        mismatches.extend(range(min(len(reference), len(candidate)), max(len(reference), len(candidate))))
+    compared = min(len(reference), len(candidate))
+    length_mismatches = list(range(compared, max(len(reference), len(candidate))))
+    exact_mismatches.extend(length_mismatches)
+
+    boxed_mismatches = []
+    boxed_compared = 0
+    first_boxed_difference = None
+    for index, (left, right) in enumerate(zip(reference, candidate)):
+        left_answer = extract_boxed_answer(left.get("text"))
+        right_answer = extract_boxed_answer(right.get("text"))
+        if left_answer is not None and right_answer is not None:
+            boxed_compared += 1
+        if left_answer != right_answer:
+            boxed_mismatches.append(index)
+            if first_boxed_difference is None:
+                first_boxed_difference = (
+                    f"- First boxed-answer difference: request {index}; "
+                    f"{args.reference_label}={left_answer!r}, "
+                    f"{args.candidate_label}={right_answer!r}\n"
+                )
+    boxed_mismatches.extend(length_mismatches)
+
+    if args.comparison_mode == "boxed":
+        mismatches = boxed_mismatches
+        mode_summary = (
+            f"- Comparable boxed answers: {boxed_compared}/{compared}\n"
+            f"- Boxed-answer mismatches: {len(boxed_mismatches)}\n"
+            f"- Exact token/text mismatches (diagnostic only): {len(exact_mismatches)}\n"
+        )
+        first_summary = first_boxed_difference
+    else:
+        mismatches = exact_mismatches
+        mode_summary = f"- Exact token/text mismatches: {len(exact_mismatches)}\n"
+        first_summary = first_difference
     report = (
         "# Greedy Output Consistency\n\n"
-        f"- Compared requests: {min(len(reference), len(candidate))}\n"
-        f"- Mismatches: {len(mismatches)}\n"
+        f"- Comparison mode: {args.comparison_mode}\n"
+        f"- Compared requests: {compared}\n"
+        + mode_summary
         + (
-            f"- First mismatch indices: {mismatches[:20]}\n{first_difference}"
+            f"- First mismatch indices: {mismatches[:20]}\n{first_summary}"
             if mismatches
             else "- Result: PASS\n"
         )
@@ -151,6 +204,9 @@ def main() -> None:
     compare_parser.add_argument("--report", type=Path, required=True)
     compare_parser.add_argument("--reference-label", default="static")
     compare_parser.add_argument("--candidate-label", default="ragged")
+    compare_parser.add_argument(
+        "--comparison-mode", choices=("exact", "boxed"), default="exact"
+    )
     args = parser.parse_args()
     if args.command == "run":
         run(args)
