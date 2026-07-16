@@ -85,7 +85,7 @@ wait_for_server() {
 snapshot_metrics() {
     local name="$1"
     curl --fail --silent --show-error "${CLIENT_BASE_URL}/metrics" > "${CURRENT_DIR}/metrics_${name}.prom"
-    grep -E '^sglang:(suffix_|dynamic_k|spec_accept_)' "${CURRENT_DIR}/metrics_${name}.prom" \
+    grep -E '^sglang:(suffix_|dynamic_k|ragged_|spec_accept_)' "${CURRENT_DIR}/metrics_${name}.prom" \
         > "${CURRENT_DIR}/metrics_${name}_focus.prom" || true
 }
 
@@ -211,6 +211,12 @@ Interpret the counters in metrics_after_k8_probe_focus.prom (filter tp_rank="0")
   sglang:dynamic_k8_output_token_total / sglang:dynamic_k8_draft_token_total
       K=8 target verification efficiency. A value near 1 is strong; a low
       value means long suffix candidates are being rejected.
+  sglang:ragged_verify_cuda_graph_batch_total /
+  (sglang:ragged_verify_cuda_graph_batch_total +
+   sglang:ragged_verify_eager_batch_total)
+      Ragged target-verify CUDA-graph hit rate. The current phase-one
+      implementation is expected to be eager-only; this is the gate for the
+      next CUDA-graph implementation.
   sglang:suffix_override_total / sglang:suffix_proposal_total
       Fraction of suffix proposals that were strong enough to replace K=4
       standalone draft tokens.
