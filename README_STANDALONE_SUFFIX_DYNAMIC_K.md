@@ -121,19 +121,30 @@ greedy sampling (`temperature=0`).
 
 ### End-to-end output throughput
 
-The earlier online comparison recorded the following total output throughput
-(token/s). All rows use the same workload within their respective batch size.
+The one-shot warm-cache experiment recorded the following total output
+throughput (token/s). Each row was run independently and uses the same fixed
+output-length workload within that concurrency.
 
 | Concurrent requests | No speculation | Standalone K=4 | Suffix static K=4 | Dynamic K=4/8 |
 | ---: | ---: | ---: | ---: | ---: |
-| 10 | 221.68 | **291.96** | 286.13 | 288.37 |
-| 20 | 302.09 | **410.38** | 397.50 | 394.04 |
-| 24 | 333.14 | **438.49** | 416.48 | 413.56 |
+| 10 | 257.72 | **367.09** | 354.16 | 343.20 |
+| 20 | 298.42 | **384.79** | 373.30 | 374.71 |
+| 24 | 309.56 | **382.94** | 378.10 | 369.72 |
 
 At these loads, standalone K=4 is the current end-to-end throughput baseline.
-Dynamic K is faster than no speculation, but has not yet exceeded standalone
-K=4 because suffix lookup and serial K=4/K=8 sub-batch verification have a
-cost.
+Dynamic K is faster than no speculation, but does not exceed standalone K=4.
+Against suffix static K=4, dynamic K is `-3.09%`, `+0.38%`, and `-2.22%` at
+10, 20, and 24 concurrency respectively. The 20-concurrency difference is
+within normal benchmark variation; dynamic K has no demonstrated net
+throughput win in the 10--24 operating range.
+
+The corresponding dynamic-versus-static latency comparison is:
+
+| Concurrent requests | Dynamic TTFT (ms) | Static TTFT (ms) | Dynamic TPOT (ms) | Static TPOT (ms) | Dynamic ITL (ms) | Static ITL (ms) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | 2,209.56 | 2,087.91 | 25.43 | 24.44 | 140.08 | 91.09 |
+| 20 | 1,872.03 | 2,085.07 | 52.50 | 53.20 | 180.11 | 172.74 |
+| 24 | 3,585.73 | 3,157.25 | 65.32 | 65.47 | 212.62 | 198.85 |
 
 ### Dynamic-K instrumentation run
 
@@ -143,18 +154,25 @@ mechanism check rather than a 10--24 end-to-end result.
 
 | Phase | Suffix proposals | K=4 suffix overrides | K=8 request rounds | K=8 committed tokens | K=8 verify tokens | K=8 efficiency |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Warmup | 17,328 | 3,440 | 5,293 | 36,918 | 42,200 | 0.875 |
-| K=8 probe | 15,497 | 3,332 | 6,411 | 45,164 | 50,688 | 0.891 |
-| Measurement aggregate* | 59,146 | 40,338 | 5,948 | 41,516 | 46,320 | 0.896 |
+| Warmup | 17,428 | 3,462 | 5,186 | 35,905 | 41,280 | 0.870 |
+| K=8 probe | 15,472 | 3,319 | 6,382 | 45,064 | 50,720 | 0.888 |
 
 `K=8 efficiency = committed tokens / K=8 verify tokens`. During the probe,
-K=8 commits about `45,164 / 6,411 = 7.04` tokens per K=8 request round. This
+K=8 commits about `45,064 / 6,382 = 7.06` tokens per K=8 request round. This
 confirms that the repeated-data workload produces real, high-quality long
 suffix hits; poor K=8 acceptance is not the reason for the end-to-end result.
 
-\*The first instrumentation script aggregated the 10/20/24/30 measurement
-pass into one counter snapshot. The updated script records separate 10, 20,
-and 24 snapshots, which are the values to use for future conclusions.
+The per-concurrency counters are:
+
+| Concurrent requests | K=8 request rounds | K=8 committed tokens | K=8 verify tokens | K=8 efficiency |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 3,526 | 24,357 | 27,352 | 0.891 |
+| 20 | 813 | 5,857 | 6,488 | 0.903 |
+| 24 | 1,234 | 7,938 | 8,888 | 0.893 |
+
+K=8 appears at external concurrency 20 and 24 because the policy checks the
+*current active decode batch*. Once requests finish and the tail batch drops
+below 20, qualifying suffix requests can enter K=8.
 
 ### Decision criteria for 10--24 concurrency
 

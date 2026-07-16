@@ -223,7 +223,9 @@ def main() -> None:
         ]
         previous_name = "after_k8_probe"
         measurement_snapshots = sorted(
-            experiment_dir.glob("metrics_after_measurement_bs*.prom")
+            path
+            for path in experiment_dir.glob("metrics_after_measurement_bs*.prom")
+            if re.fullmatch(r"metrics_after_measurement_bs\d+\.prom", path.name)
         )
         if measurement_snapshots:
             for snapshot_path in measurement_snapshots:
