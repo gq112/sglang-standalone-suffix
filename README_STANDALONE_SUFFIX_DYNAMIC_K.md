@@ -290,6 +290,8 @@ warms the cache with even-indexed questions, then evaluates the original
 question order so cached and uncached requests are interleaved in a batch.
 Require `dynamic_k8_request_total > 0` in the final metrics snapshot; otherwise
 the reported score did not exercise K=8/ragged verification.
+The JSONL must be the labeled GSM8K format containing both `question` and
+`answer`; a SpecForge prompt-only file with `turns` cannot produce accuracy.
 
 ## Correctness Boundaries
 

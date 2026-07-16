@@ -140,12 +140,26 @@ mkdir -p "${RESULTS_DIR}"
 
 WARMUP_PATH="${RESULTS_DIR}/gsm8k_warmup_interleaved.jsonl"
 WARMUP_QUESTIONS="$(python - "${GSM8K_PATH}" "${WARMUP_PATH}" "${NUM_QUESTIONS}" "${NUM_SHOTS}" <<'PY'
+import json
 import sys
 from pathlib import Path
 
 source, destination, limit, num_shots = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 lines = Path(source).read_text(encoding="utf-8").splitlines()
-selected = [line for index, line in enumerate(lines[:limit]) if index < num_shots or index % 2 == 0]
+records = [json.loads(line) for line in lines[:limit]]
+if len(records) < num_shots:
+    raise SystemExit(f"GSM8K dataset needs at least {num_shots} records, got {len(records)}")
+if any("question" not in record or "answer" not in record for record in records):
+    raise SystemExit(
+        "GSM8K accuracy needs labeled JSONL records with both 'question' and "
+        "'answer'. The supplied file is prompt-only (for example {'turns': [...]}) "
+        "and cannot be scored. Set GSM8K_PATH to the labeled GSM8K test.jsonl."
+    )
+selected = [
+    line
+    for index, line in enumerate(lines[:limit])
+    if index < num_shots or index % 2 == 0
+]
 Path(destination).write_text("\n".join(selected) + "\n", encoding="utf-8")
 print(len(selected))
 PY
