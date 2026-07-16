@@ -177,6 +177,7 @@ benchmark/mmlu/data.tar
 benchmark/llava_bench/images
 benchmark/llava_bench/mme_pack
 *.jsonl
+!datasets/gsm8k_test.jsonl
 tmp*.txt
 
 # Plots
