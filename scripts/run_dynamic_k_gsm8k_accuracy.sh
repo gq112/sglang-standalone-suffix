@@ -28,6 +28,10 @@ NUM_QUESTIONS="${NUM_QUESTIONS:-200}"
 PARALLEL="${PARALLEL:-10}"
 NUM_SHOTS="${NUM_SHOTS:-5}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-512}"
+NORMAL_DRAFT_TOKENS="${NORMAL_DRAFT_TOKENS:-4}"
+LONG_DRAFT_TOKENS="${LONG_DRAFT_TOKENS:-8}"
+LONG_SUFFIX_MIN_MATCH_LEN="${LONG_SUFFIX_MIN_MATCH_LEN:-7}"
+HIGH_BS_THRESHOLD="${HIGH_BS_THRESHOLD:-20}"
 SERVER_START_TIMEOUT="${SERVER_START_TIMEOUT:-900}"
 PRELOAD_LIBSTDCXX="${PRELOAD_LIBSTDCXX:-/usr/lib/x86_64-linux-gnu/libstdc++.so.6}"
 RESULTS_DIR="${RESULTS_DIR:-${SPEC_FORGE_DIR}/results/dynamic_k_gsm8k_$(date +%Y%m%d_%H%M%S)}"
@@ -191,13 +195,14 @@ fi
 snapshot_metrics after_accuracy
 cleanup_server
 
-echo "========== ragged_dynamic_k4_k8 =========="
-start_server ragged_dynamic_k4_k8 \
+RAGGED_EXPERIMENT="ragged_dynamic_k${NORMAL_DRAFT_TOKENS}_k${LONG_DRAFT_TOKENS}"
+echo "========== ${RAGGED_EXPERIMENT} =========="
+start_server "${RAGGED_EXPERIMENT}" \
     --speculative-dynamic-k-enable \
-    --speculative-normal-draft-token-num 4 \
-    --speculative-long-suffix-draft-token-num 8 \
-    --speculative-long-suffix-min-match-len 7 \
-    --speculative-high-bs-threshold 20
+    --speculative-normal-draft-token-num "${NORMAL_DRAFT_TOKENS}" \
+    --speculative-long-suffix-draft-token-num "${LONG_DRAFT_TOKENS}" \
+    --speculative-long-suffix-min-match-len "${LONG_SUFFIX_MIN_MATCH_LEN}" \
+    --speculative-high-bs-threshold "${HIGH_BS_THRESHOLD}"
 if [[ "${DATASET_MODE}" == "labeled" ]]; then
     run_eval "${WARMUP_PATH}" "${WARMUP_QUESTIONS}" warmup_interleaved.log
 else
@@ -228,15 +233,15 @@ def accuracy(name):
     return float(match.group(1))
 
 static = accuracy("suffix_static_k4")
-ragged = accuracy("ragged_dynamic_k4_k8")
+ragged = accuracy(next(path.name for path in root.glob("ragged_dynamic_k*_k*")))
 report = root / "accuracy_comparison.md"
 report.write_text(
     "# Ragged Dynamic-K GSM8K Accuracy\n\n"
     "| Config | Accuracy |\n| --- | ---: |\n"
     f"| Suffix static K=4 | {static:.3f} |\n"
-    f"| FA3 ragged dynamic K=4/8 | {ragged:.3f} |\n\n"
+    f"| FA3 ragged dynamic K | {ragged:.3f} |\n\n"
     f"Delta: {(ragged - static) * 100:+.2f} percentage points.\n\n"
-    "Ragged coverage: inspect `ragged_dynamic_k4_k8/metrics_after_accuracy_focus.prom`; "
+    "Ragged coverage: inspect the `ragged_dynamic_k*/metrics_after_accuracy_focus.prom` file; "
     "`dynamic_k8_request_total` must be nonzero.\n",
     encoding="utf-8",
 )
@@ -245,7 +250,7 @@ PY
 else
     python "${SGLANG_DIR}/scripts/check_greedy_output_consistency.py" compare \
         --reference "${RESULTS_DIR}/suffix_static_k4/outputs.jsonl" \
-        --candidate "${RESULTS_DIR}/ragged_dynamic_k4_k8/outputs.jsonl" \
+        --candidate "${RESULTS_DIR}/${RAGGED_EXPERIMENT}/outputs.jsonl" \
         --report "${RESULTS_DIR}/greedy_output_comparison.md"
 fi
 
