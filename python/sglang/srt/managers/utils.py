@@ -39,6 +39,8 @@ class GenerationBatchResult:
     dynamic_k_mixed_verify_batch_count: int = 0
     dynamic_k_normal_verify_call_count: int = 0
     dynamic_k_long_verify_call_count: int = 0
+    ragged_verify_cuda_graph_batch_count: int = 0
+    ragged_verify_eager_batch_count: int = 0
 
     # For output processing
     extend_input_len_per_req: Optional[List[int]] = None

@@ -119,6 +119,8 @@ class EAGLEWorker(TpModelWorker):
         self._dynamic_k_mixed_verify_batch_count = 0
         self._dynamic_k_normal_verify_call_count = 0
         self._dynamic_k_long_verify_call_count = 0
+        self._ragged_verify_cuda_graph_batch_count = 0
+        self._ragged_verify_eager_batch_count = 0
         self._dynamic_k_enable = (
             server_args.speculative_dynamic_k_enable
             and server_args.speculative_suffix_enable
@@ -315,6 +317,8 @@ class EAGLEWorker(TpModelWorker):
         self._dynamic_k_mixed_verify_batch_count = 0
         self._dynamic_k_normal_verify_call_count = 0
         self._dynamic_k_long_verify_call_count = 0
+        self._ragged_verify_cuda_graph_batch_count = 0
+        self._ragged_verify_eager_batch_count = 0
         if self._suffix_proposer:
             self._suffix_prepare_batch(batch)
 
@@ -377,6 +381,8 @@ class EAGLEWorker(TpModelWorker):
                 dynamic_k_mixed_verify_batch_count=self._dynamic_k_mixed_verify_batch_count,
                 dynamic_k_normal_verify_call_count=self._dynamic_k_normal_verify_call_count,
                 dynamic_k_long_verify_call_count=self._dynamic_k_long_verify_call_count,
+                ragged_verify_cuda_graph_batch_count=self._ragged_verify_cuda_graph_batch_count,
+                ragged_verify_eager_batch_count=self._ragged_verify_eager_batch_count,
             )
 
     def _get_num_verify_tokens(
@@ -1454,6 +1460,10 @@ class EAGLEWorker(TpModelWorker):
             # split-into-two-forwards implementation.
             self._dynamic_k_verify_batch_count += 1
             self._dynamic_k_long_verify_call_count += 1
+            if can_run_cuda_graph:
+                self._ragged_verify_cuda_graph_batch_count += 1
+            else:
+                self._ragged_verify_eager_batch_count += 1
             if self._long_suffix_draft_token_num > self._normal_draft_token_num:
                 long_mask = spec_info.ragged_long_suffix_mask.tolist()
                 widths = spec_info.ragged_draft_token_nums.tolist()

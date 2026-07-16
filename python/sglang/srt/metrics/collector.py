@@ -323,6 +323,16 @@ class SchedulerMetricsCollector:
             documentation="Long-suffix target verify calls issued by dynamic K batches.",
             labelnames=labels.keys(),
         )
+        self.ragged_verify_cuda_graph_batch_total = Counter(
+            name="sglang:ragged_verify_cuda_graph_batch_total",
+            documentation="Ragged dynamic-K target verify batches replayed through CUDA Graph.",
+            labelnames=labels.keys(),
+        )
+        self.ragged_verify_eager_batch_total = Counter(
+            name="sglang:ragged_verify_eager_batch_total",
+            documentation="Ragged dynamic-K target verify batches executed eagerly.",
+            labelnames=labels.keys(),
+        )
 
         # Retract
         self.num_retracted_reqs = Gauge(
@@ -638,6 +648,8 @@ class SchedulerMetricsCollector:
         dynamic_mixed_verify_batch_count: int,
         dynamic_normal_verify_call_count: int,
         dynamic_long_verify_call_count: int,
+        ragged_verify_cuda_graph_batch_count: int,
+        ragged_verify_eager_batch_count: int,
     ) -> None:
         """Publish cumulative suffix/dynamic-K counters for one scheduler batch."""
         metric_values = (
@@ -658,6 +670,14 @@ class SchedulerMetricsCollector:
             (
                 self.dynamic_k_long_verify_call_total,
                 dynamic_long_verify_call_count,
+            ),
+            (
+                self.ragged_verify_cuda_graph_batch_total,
+                ragged_verify_cuda_graph_batch_count,
+            ),
+            (
+                self.ragged_verify_eager_batch_total,
+                ragged_verify_eager_batch_count,
             ),
         )
         for metric, value in metric_values:
