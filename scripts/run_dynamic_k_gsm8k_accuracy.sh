@@ -32,6 +32,9 @@ NORMAL_DRAFT_TOKENS="${NORMAL_DRAFT_TOKENS:-4}"
 LONG_DRAFT_TOKENS="${LONG_DRAFT_TOKENS:-8}"
 LONG_SUFFIX_MIN_MATCH_LEN="${LONG_SUFFIX_MIN_MATCH_LEN:-7}"
 HIGH_BS_THRESHOLD="${HIGH_BS_THRESHOLD:-20}"
+# Correctness isolation only. Set to 1 to run both static and ragged target
+# verification eagerly, removing CUDA-graph versus eager kernel differences.
+DISABLE_CUDA_GRAPH="${DISABLE_CUDA_GRAPH:-0}"
 SERVER_START_TIMEOUT="${SERVER_START_TIMEOUT:-900}"
 PRELOAD_LIBSTDCXX="${PRELOAD_LIBSTDCXX:-/usr/lib/x86_64-linux-gnu/libstdc++.so.6}"
 RESULTS_DIR="${RESULTS_DIR:-${SPEC_FORGE_DIR}/results/dynamic_k_gsm8k_$(date +%Y%m%d_%H%M%S)}"
@@ -101,6 +104,9 @@ start_server() {
         --port "${PORT}"
         --enable-metrics
     )
+    if [[ "${DISABLE_CUDA_GRAPH}" == "1" ]]; then
+        args+=(--disable-cuda-graph)
+    fi
     if [[ -n "${GPU_IDS}" ]]; then
         args=(env "CUDA_VISIBLE_DEVICES=${GPU_IDS}" "${args[@]}")
     fi
