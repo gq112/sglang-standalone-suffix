@@ -303,6 +303,26 @@ class SchedulerMetricsCollector:
             documentation="K=8 verification tokens submitted to the target model.",
             labelnames=labels.keys(),
         )
+        self.dynamic_k_verify_batch_total = Counter(
+            name="sglang:dynamic_k_verify_batch_total",
+            documentation="Parent scheduler batches that used the dynamic K verification path.",
+            labelnames=labels.keys(),
+        )
+        self.dynamic_k_mixed_verify_batch_total = Counter(
+            name="sglang:dynamic_k_mixed_verify_batch_total",
+            documentation="Dynamic K parent batches split into both K=4 and K=8 target verifies.",
+            labelnames=labels.keys(),
+        )
+        self.dynamic_k_normal_verify_call_total = Counter(
+            name="sglang:dynamic_k_normal_verify_call_total",
+            documentation="K=4 target verify calls issued by dynamic K mixed batches.",
+            labelnames=labels.keys(),
+        )
+        self.dynamic_k_long_verify_call_total = Counter(
+            name="sglang:dynamic_k_long_verify_call_total",
+            documentation="Long-suffix target verify calls issued by dynamic K batches.",
+            labelnames=labels.keys(),
+        )
 
         # Retract
         self.num_retracted_reqs = Gauge(
@@ -614,6 +634,10 @@ class SchedulerMetricsCollector:
         long_request_count: int,
         long_output_token_count: int,
         long_draft_token_count: int,
+        dynamic_verify_batch_count: int,
+        dynamic_mixed_verify_batch_count: int,
+        dynamic_normal_verify_call_count: int,
+        dynamic_long_verify_call_count: int,
     ) -> None:
         """Publish cumulative suffix/dynamic-K counters for one scheduler batch."""
         metric_values = (
@@ -622,6 +646,19 @@ class SchedulerMetricsCollector:
             (self.dynamic_k8_request_total, long_request_count),
             (self.dynamic_k8_output_token_total, long_output_token_count),
             (self.dynamic_k8_draft_token_total, long_draft_token_count),
+            (self.dynamic_k_verify_batch_total, dynamic_verify_batch_count),
+            (
+                self.dynamic_k_mixed_verify_batch_total,
+                dynamic_mixed_verify_batch_count,
+            ),
+            (
+                self.dynamic_k_normal_verify_call_total,
+                dynamic_normal_verify_call_count,
+            ),
+            (
+                self.dynamic_k_long_verify_call_total,
+                dynamic_long_verify_call_count,
+            ),
         )
         for metric, value in metric_values:
             if value:

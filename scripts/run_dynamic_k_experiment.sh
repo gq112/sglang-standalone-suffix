@@ -85,7 +85,7 @@ wait_for_server() {
 snapshot_metrics() {
     local name="$1"
     curl --fail --silent --show-error "${CLIENT_BASE_URL}/metrics" > "${CURRENT_DIR}/metrics_${name}.prom"
-    grep -E '^sglang:(suffix_|dynamic_k8_|spec_accept_)' "${CURRENT_DIR}/metrics_${name}.prom" \
+    grep -E '^sglang:(suffix_|dynamic_k|spec_accept_)' "${CURRENT_DIR}/metrics_${name}.prom" \
         > "${CURRENT_DIR}/metrics_${name}_focus.prom" || true
 }
 
@@ -218,9 +218,10 @@ Interpret the counters in metrics_after_k8_probe_focus.prom (filter tp_rank="0")
 Primary comparisons:
   standalone_k4 vs no_speculation: standalone speculative-decoding benefit.
   suffix_static_k4 vs standalone_k4: suffix-cache net benefit/cost.
-  dynamic_k4_k8 vs suffix_static_k4: dynamic-K net benefit. Use the individual
-  measurement_bs10, measurement_bs20, and measurement_bs24 results. Batches
-  >=20 disable K=8 until the decode tail falls below 20.
+  dynamic_k4_k4 vs suffix_static_k4: split/serial-verify/merge overhead.
+  dynamic_k4_k8 vs dynamic_k4_k4: net value of widening long suffix to K=8.
+  dynamic_k4_k8 vs suffix_static_k4: overall dynamic-K net benefit. Use the
+  individual measurement_bs10, measurement_bs20, and measurement_bs24 results.
 EOF
 
 run_experiment "no_speculation"
@@ -237,6 +238,18 @@ run_experiment "suffix_static_k4" \
     --speculative-num-draft-tokens 4 \
     --speculative-eagle-topk 1 \
     --speculative-suffix-enable
+run_experiment "dynamic_k4_k4" \
+    --speculative-draft-model-path "${DRAFT_MODEL_PATH}" \
+    --speculative-algorithm STANDALONE \
+    --speculative-num-steps 3 \
+    --speculative-num-draft-tokens 4 \
+    --speculative-eagle-topk 1 \
+    --speculative-suffix-enable \
+    --speculative-dynamic-k-enable \
+    --speculative-normal-draft-token-num 4 \
+    --speculative-long-suffix-draft-token-num 4 \
+    --speculative-long-suffix-min-match-len 7 \
+    --speculative-high-bs-threshold 20
 run_experiment "dynamic_k4_k8" \
     --speculative-draft-model-path "${DRAFT_MODEL_PATH}" \
     --speculative-algorithm STANDALONE \

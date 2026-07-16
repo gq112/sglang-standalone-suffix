@@ -35,6 +35,10 @@ class GenerationBatchResult:
     suffix_long_request_count: int = 0
     suffix_long_output_token_count: int = 0
     suffix_long_draft_token_count: int = 0
+    dynamic_k_verify_batch_count: int = 0
+    dynamic_k_mixed_verify_batch_count: int = 0
+    dynamic_k_normal_verify_call_count: int = 0
+    dynamic_k_long_verify_call_count: int = 0
 
     # For output processing
     extend_input_len_per_req: Optional[List[int]] = None

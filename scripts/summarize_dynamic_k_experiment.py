@@ -14,6 +14,10 @@ METRICS = (
     "sglang:dynamic_k8_request_total",
     "sglang:dynamic_k8_output_token_total",
     "sglang:dynamic_k8_draft_token_total",
+    "sglang:dynamic_k_verify_batch_total",
+    "sglang:dynamic_k_mixed_verify_batch_total",
+    "sglang:dynamic_k_normal_verify_call_total",
+    "sglang:dynamic_k_long_verify_call_total",
 )
 SNAPSHOTS = ("startup", "after_warmup", "after_k8_probe", "after_measurement")
 LABEL_RE = re.compile(r'tp_rank="([^"]+)"')
@@ -34,6 +38,7 @@ CONFIG_ORDER = (
     "no_speculation",
     "standalone_k4",
     "suffix_static_k4",
+    "dynamic_k4_k4",
     "dynamic_k4_k8",
 )
 
@@ -130,8 +135,8 @@ def write_throughput_comparison(results_dir: Path) -> None:
         "Primary metric: total end-to-end output throughput (token/s). "
         "Positive dynamic deltas are better.",
         "",
-        "| Concurrency | No speculation | Standalone K=4 | Suffix static K=4 | Dynamic K=4/8 | Dynamic vs suffix static | Dynamic vs Standalone |",
-        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Concurrency | No speculation | Standalone K=4 | Suffix static K=4 | Dynamic K=4/4 | Dynamic K=4/8 | K=4/4 vs static | K=4/8 vs K=4/4 | K=4/8 vs static |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for concurrency, config_rows in sorted(by_concurrency.items()):
         def throughput(config: str) -> float | None:
@@ -141,7 +146,18 @@ def write_throughput_comparison(results_dir: Path) -> None:
         no_spec = throughput("no_speculation")
         standalone = throughput("standalone_k4")
         suffix_static = throughput("suffix_static_k4")
+        dynamic_k4_k4 = throughput("dynamic_k4_k4")
         dynamic = throughput("dynamic_k4_k8")
+        delta_split = (
+            (dynamic_k4_k4 / suffix_static - 1) * 100
+            if dynamic_k4_k4 is not None and suffix_static not in (None, 0)
+            else None
+        )
+        delta_k8 = (
+            (dynamic / dynamic_k4_k4 - 1) * 100
+            if dynamic is not None and dynamic_k4_k4 not in (None, 0)
+            else None
+        )
         delta_static = (
             (dynamic / suffix_static - 1) * 100
             if dynamic is not None and suffix_static not in (None, 0)
@@ -162,9 +178,11 @@ def write_throughput_comparison(results_dir: Path) -> None:
                     format_value(no_spec),
                     format_value(standalone),
                     format_value(suffix_static),
+                    format_value(dynamic_k4_k4),
                     format_value(dynamic),
+                    format_delta(delta_split),
+                    format_delta(delta_k8),
                     format_delta(delta_static),
-                    format_delta(delta_standalone),
                 )
             )
             + " |"
@@ -208,6 +226,7 @@ def main() -> None:
     print(
         "experiment\tphase\tproposals\toverrides\tk8_requests"
         "\tk8_output_tokens\tk8_draft_tokens\tk8_efficiency"
+        "\tdynamic_batches\tmixed_batches\tk4_verify_calls\tk8_verify_calls"
     )
     dynamic_probe: dict[str, float] | None = None
     for experiment_dir in sorted(path for path in args.results_dir.iterdir() if path.is_dir()):
@@ -252,7 +271,11 @@ def main() -> None:
                 f"{delta['sglang:suffix_override_total']:.0f}\t"
                 f"{delta['sglang:dynamic_k8_request_total']:.0f}\t"
                 f"{delta['sglang:dynamic_k8_output_token_total']:.0f}\t"
-                f"{k8_draft:.0f}\t{k8_efficiency:.3f}"
+                f"{k8_draft:.0f}\t{k8_efficiency:.3f}\t"
+                f"{delta['sglang:dynamic_k_verify_batch_total']:.0f}\t"
+                f"{delta['sglang:dynamic_k_mixed_verify_batch_total']:.0f}\t"
+                f"{delta['sglang:dynamic_k_normal_verify_call_total']:.0f}\t"
+                f"{delta['sglang:dynamic_k_long_verify_call_total']:.0f}"
             )
             if experiment_dir.name == "dynamic_k4_k8" and phase == "k8_probe":
                 dynamic_probe = delta

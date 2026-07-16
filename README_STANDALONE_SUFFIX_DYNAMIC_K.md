@@ -117,6 +117,7 @@ greedy sampling (`temperature=0`).
 | No speculation | No | No | No |
 | Standalone K=4 | Yes | No | No |
 | Suffix static K=4 | Yes | Yes | No |
+| Dynamic split K=4/4 | Yes | Yes | Yes, with long width fixed to 4 |
 | Dynamic K=4/8 | Yes | Yes | Yes |
 
 ### End-to-end output throughput
@@ -193,6 +194,42 @@ The experiment script writes this comparison automatically as
 `throughput_comparison.tsv` and `throughput_comparison.md` in its results
 directory, parsing the terminal summary emitted by `test_req.py` after each
 concurrency run.
+
+### Verifying split/merge overhead with low-interference counters
+
+The deployment experiment also runs a `dynamic_k4_k4` ablation. It keeps the
+dynamic request classification and suffix-long path, but configures both paths
+as K=4. This isolates the cost of request splitting, serial target verifies,
+and result merging from the benefit of the K=8 width.
+
+| Comparison | What it isolates |
+| --- | --- |
+| `dynamic_k4_k4` vs `suffix_static_k4` | K=4/K=4 sub-batch split, serial target calls, and merge overhead |
+| `dynamic_k4_k8` vs `dynamic_k4_k4` | Incremental value/cost of widening the long suffix path from K=4 to K=8 |
+| `dynamic_k4_k8` vs `suffix_static_k4` | Overall production impact |
+
+The following counters are accumulated with integer additions only; they do
+not add CUDA events, GPU synchronization, or per-token logging:
+
+- `dynamic_k_verify_batch_total`: parent batches using a dynamic long-suffix
+  verify path.
+- `dynamic_k_mixed_verify_batch_total`: parent batches split into both K=4 and
+  K=8 verifies. Every such batch submits two serial target forwards.
+- `dynamic_k_normal_verify_call_total` and
+  `dynamic_k_long_verify_call_total`: actual normal-path and long-suffix
+  target-verify calls. In the K=4/4 ablation, the latter is also K=4.
+
+For a mixed batch the expected relation is:
+
+```text
+normal_verify_calls + long_verify_calls
+  = dynamic_verify_batches + mixed_verify_batches
+```
+
+Thus `mixed_verify_batches / dynamic_verify_batches` is the direct measure of
+how often the dynamic implementation pays for an additional serial target
+forward. Combine it with the end-to-end A/B/C throughput comparison; no GPU
+timing in the serving hot path is needed for this decision.
 
 ## Correctness Boundaries
 

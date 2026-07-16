@@ -115,6 +115,10 @@ class EAGLEWorker(TpModelWorker):
         self._suffix_long_request_count = 0
         self._suffix_long_output_token_count = 0
         self._suffix_long_draft_token_count = 0
+        self._dynamic_k_verify_batch_count = 0
+        self._dynamic_k_mixed_verify_batch_count = 0
+        self._dynamic_k_normal_verify_call_count = 0
+        self._dynamic_k_long_verify_call_count = 0
         self._dynamic_k_enable = (
             server_args.speculative_dynamic_k_enable
             and server_args.speculative_suffix_enable
@@ -307,6 +311,10 @@ class EAGLEWorker(TpModelWorker):
         self._suffix_long_request_count = 0
         self._suffix_long_output_token_count = 0
         self._suffix_long_draft_token_count = 0
+        self._dynamic_k_verify_batch_count = 0
+        self._dynamic_k_mixed_verify_batch_count = 0
+        self._dynamic_k_normal_verify_call_count = 0
+        self._dynamic_k_long_verify_call_count = 0
         if self._suffix_proposer:
             self._suffix_prepare_batch(batch)
 
@@ -365,6 +373,10 @@ class EAGLEWorker(TpModelWorker):
                 suffix_long_request_count=self._suffix_long_request_count,
                 suffix_long_output_token_count=self._suffix_long_output_token_count,
                 suffix_long_draft_token_count=self._suffix_long_draft_token_count,
+                dynamic_k_verify_batch_count=self._dynamic_k_verify_batch_count,
+                dynamic_k_mixed_verify_batch_count=self._dynamic_k_mixed_verify_batch_count,
+                dynamic_k_normal_verify_call_count=self._dynamic_k_normal_verify_call_count,
+                dynamic_k_long_verify_call_count=self._dynamic_k_long_verify_call_count,
             )
 
     def _get_num_verify_tokens(
@@ -598,7 +610,6 @@ class EAGLEWorker(TpModelWorker):
                 continue
             indices.append(idx)
 
-        self._suffix_long_request_count = len(indices)
         return indices
 
     def _build_linear_suffix_verify_input(
@@ -1119,6 +1130,9 @@ class EAGLEWorker(TpModelWorker):
                 long_suffix_indices,
                 self._long_suffix_draft_token_num,
             )
+            # Keep the long-suffix marker on the verify input so that the
+            # common verify path counts long-only and mixed batches alike.
+            long_suffix_input._is_dynamic_k_long_suffix = True
             self._last_suffix_status = (
                 f"dynamic-k long={len(long_suffix_indices)} normal={len(normal_indices)}"
             )
@@ -1131,6 +1145,7 @@ class EAGLEWorker(TpModelWorker):
                 long_suffix_indices=long_suffix_indices,
             )
         if long_suffix_input is not None:
+            long_suffix_input._is_dynamic_k_long_only = True
             return long_suffix_input
         assert normal_input is not None
         return normal_input
@@ -1281,6 +1296,23 @@ class EAGLEWorker(TpModelWorker):
             vocab_mask,
         )
 
+        # This path is shared by a long-only dynamic batch and the long half
+        # of a mixed K=4/K=8 batch. Integer counters avoid CUDA events or
+        # synchronizations in the hot path.
+        if getattr(spec_info, "_is_dynamic_k_long_suffix", False):
+            if getattr(spec_info, "_is_dynamic_k_long_only", False):
+                self._dynamic_k_verify_batch_count += 1
+            if spec_info.draft_token_num > self._normal_draft_token_num:
+                self._suffix_long_request_count += batch.batch_size()
+                self._suffix_long_output_token_count += sum(
+                    int(accept_length) + 1
+                    for accept_length in res.accept_length_per_req_cpu
+                )
+                self._suffix_long_draft_token_count += (
+                    batch.batch_size() * spec_info.draft_token_num
+                )
+            self._dynamic_k_long_verify_call_count += 1
+
         # Post process based on verified outputs.
         # Pick indices that we care (accepted)
         logits_output.next_token_logits = logits_output.next_token_logits[
@@ -1344,7 +1376,11 @@ class EAGLEWorker(TpModelWorker):
         self, batch: ScheduleBatch, spec_info: DynamicKVerifyInput
     ):
         results = []
+        self._dynamic_k_verify_batch_count += 1
+        if spec_info.normal is not None and spec_info.long_suffix is not None:
+            self._dynamic_k_mixed_verify_batch_count += 1
         if spec_info.normal is not None and spec_info.normal_indices:
+            self._dynamic_k_normal_verify_call_count += 1
             normal_batch = self._make_sub_batch(batch, spec_info.normal_indices)
             logits_output, verify_output, _, can_run_cuda_graph = self.verify(
                 normal_batch, spec_info.normal
@@ -1365,14 +1401,6 @@ class EAGLEWorker(TpModelWorker):
                 suffix_batch, spec_info.long_suffix
             )
             verify_output.can_run_cuda_graph = can_run_cuda_graph
-            self._suffix_long_output_token_count += sum(
-                int(accept_length) + 1
-                for accept_length in verify_output.accept_length_per_req_cpu
-            )
-            self._suffix_long_draft_token_count += (
-                len(spec_info.long_suffix_indices)
-                * spec_info.long_suffix.draft_token_num
-            )
             results.append(
                 (
                     spec_info.long_suffix_indices,
