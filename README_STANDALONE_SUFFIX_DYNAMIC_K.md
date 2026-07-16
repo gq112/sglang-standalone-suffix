@@ -126,26 +126,30 @@ The one-shot warm-cache experiment recorded the following total output
 throughput (token/s). Each row was run independently and uses the same fixed
 output-length workload within that concurrency.
 
-| Concurrent requests | No speculation | Standalone K=4 | Suffix static K=4 | Dynamic K=4/8 |
-| ---: | ---: | ---: | ---: | ---: |
-| 10 | 257.72 | **367.09** | 354.16 | 343.20 |
-| 20 | 298.42 | **384.79** | 373.30 | 374.71 |
-| 24 | 309.56 | **382.94** | 378.10 | 369.72 |
+| Concurrent requests | No speculation | Standalone K=4 | Suffix static K=4 | Dynamic K=4/4 | Dynamic K=4/8 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | 260.33 | **366.11** | 355.58 | 301.49 | 336.22 |
+| 20 | 291.78 | **388.70** | 373.36 | 368.07 | 379.29 |
+| 24 | 301.49 | **388.08** | 372.82 | 359.96 | 355.78 |
 
 At these loads, standalone K=4 is the current end-to-end throughput baseline.
 Dynamic K is faster than no speculation, but does not exceed standalone K=4.
-Against suffix static K=4, dynamic K is `-3.09%`, `+0.38%`, and `-2.22%` at
-10, 20, and 24 concurrency respectively. The 20-concurrency difference is
-within normal benchmark variation; dynamic K has no demonstrated net
-throughput win in the 10--24 operating range.
+The K=4/4 ablation is `-15.21%`, `-1.42%`, and `-3.45%` versus suffix static
+K=4 at 10, 20, and 24 concurrency. This is the direct cost of splitting and
+serializing the verify work. Widening long suffixes from K=4 to K=8 recovers
+`+11.52%`, `+3.05%`, and `-1.16%` versus the K=4/4 ablation, but the final
+K=4/8 result is still `-5.44%`, `+1.59%`, and `-4.57%` versus suffix static
+K=4. The 20-concurrency gain is small enough to treat as benchmark variation,
+so dynamic K has no demonstrated stable net throughput win in the 10--24
+operating range.
 
 The corresponding dynamic-versus-static latency comparison is:
 
 | Concurrent requests | Dynamic TTFT (ms) | Static TTFT (ms) | Dynamic TPOT (ms) | Static TPOT (ms) | Dynamic ITL (ms) | Static ITL (ms) |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 10 | 2,209.56 | 2,087.91 | 25.43 | 24.44 | 140.08 | 91.09 |
-| 20 | 1,872.03 | 2,085.07 | 52.50 | 53.20 | 180.11 | 172.74 |
-| 24 | 3,585.73 | 3,157.25 | 65.32 | 65.47 | 212.62 | 198.85 |
+| 10 | 2,185.22 | 2,078.41 | 25.83 | 24.43 | 139.25 | 90.65 |
+| 20 | 2,077.08 | 1,870.86 | 52.47 | 52.82 | 177.18 | 173.71 |
+| 24 | 3,774.38 | 3,334.35 | 66.34 | 66.04 | 217.10 | 200.73 |
 
 ### Dynamic-K instrumentation run
 
@@ -155,11 +159,11 @@ mechanism check rather than a 10--24 end-to-end result.
 
 | Phase | Suffix proposals | K=4 suffix overrides | K=8 request rounds | K=8 committed tokens | K=8 verify tokens | K=8 efficiency |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Warmup | 17,428 | 3,462 | 5,186 | 35,905 | 41,280 | 0.870 |
-| K=8 probe | 15,472 | 3,319 | 6,382 | 45,064 | 50,720 | 0.888 |
+| Warmup | 17,432 | 3,416 | 5,171 | 35,813 | 41,368 | 0.866 |
+| K=8 probe | 15,933 | 3,519 | 6,291 | 44,427 | 50,328 | 0.883 |
 
 `K=8 efficiency = committed tokens / K=8 verify tokens`. During the probe,
-K=8 commits about `45,064 / 6,382 = 7.06` tokens per K=8 request round. This
+K=8 commits about `44,427 / 6,291 = 7.06` tokens per K=8 request round. This
 confirms that the repeated-data workload produces real, high-quality long
 suffix hits; poor K=8 acceptance is not the reason for the end-to-end result.
 
@@ -167,9 +171,9 @@ The per-concurrency counters are:
 
 | Concurrent requests | K=8 request rounds | K=8 committed tokens | K=8 verify tokens | K=8 efficiency |
 | ---: | ---: | ---: | ---: | ---: |
-| 10 | 3,526 | 24,357 | 27,352 | 0.891 |
-| 20 | 813 | 5,857 | 6,488 | 0.903 |
-| 24 | 1,234 | 7,938 | 8,888 | 0.893 |
+| 10 | 3,418 | 24,286 | 27,344 | 0.888 |
+| 20 | 754 | 5,393 | 6,032 | 0.894 |
+| 24 | 1,262 | 9,102 | 10,096 | 0.902 |
 
 K=8 appears at external concurrency 20 and 24 because the policy checks the
 *current active decode batch*. Once requests finish and the tail batch drops
@@ -230,6 +234,23 @@ Thus `mixed_verify_batches / dynamic_verify_batches` is the direct measure of
 how often the dynamic implementation pays for an additional serial target
 forward. Combine it with the end-to-end A/B/C throughput comparison; no GPU
 timing in the serving hot path is needed for this decision.
+
+The latest counter evidence confirms the split cost:
+
+| Concurrency | Config | Dynamic parent batches | Mixed batches | Target verify calls | Calls per parent batch |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 10 | K=4/4 | 1,055 | 839 | 1,894 | 1.80 |
+| 10 | K=4/8 | 730 | 677 | 1,407 | 1.93 |
+| 20 | K=4/4 | 170 | 155 | 325 | 1.91 |
+| 20 | K=4/8 | 123 | 117 | 240 | 1.95 |
+| 24 | K=4/4 | 320 | 211 | 531 | 1.66 |
+| 24 | K=4/8 | 199 | 190 | 389 | 1.95 |
+
+`Target verify calls = normal verify calls + long-suffix verify calls`. The
+K=8 path reduces parent batches at concurrency 10 from 1,055 to 730 and
+recovers 11.52% throughput versus K=4/4, but almost every remaining parent
+batch is still split into two serial target forwards. This directly explains
+why high K=8 acceptance does not yet turn into a net production gain.
 
 ## Correctness Boundaries
 

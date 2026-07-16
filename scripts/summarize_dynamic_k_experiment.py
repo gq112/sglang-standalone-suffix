@@ -226,7 +226,7 @@ def main() -> None:
     print(
         "experiment\tphase\tproposals\toverrides\tk8_requests"
         "\tk8_output_tokens\tk8_draft_tokens\tk8_efficiency"
-        "\tdynamic_batches\tmixed_batches\tk4_verify_calls\tk8_verify_calls"
+        "\tdynamic_batches\tmixed_batches\tk4_verify_calls\tlong_verify_calls"
     )
     dynamic_probe: dict[str, float] | None = None
     for experiment_dir in sorted(path for path in args.results_dir.iterdir() if path.is_dir()):
