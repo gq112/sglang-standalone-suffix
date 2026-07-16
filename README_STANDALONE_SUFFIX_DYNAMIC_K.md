@@ -284,7 +284,8 @@ cache keyed by `(batch_size, K=8 request count)`.
 
 Run `scripts/run_dynamic_k_gsm8k_accuracy.sh` on the serving host to compare
 suffix static K=4 with FA3 ragged K=4/8. It defaults to
-`/workspace/SpecForge/gsm8k.jsonl`, uses greedy decoding, and writes
+`datasets/gsm8k_test.jsonl` (the official labeled GSM8K test split), uses
+greedy decoding, and writes
 `accuracy_comparison.md` below its result directory. The dynamic run first
 warms the cache with even-indexed questions, then evaluates the original
 question order so cached and uncached requests are interleaved in a batch.

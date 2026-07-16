@@ -13,7 +13,9 @@ set -Eeuo pipefail
 
 SGLANG_DIR="${SGLANG_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SPEC_FORGE_DIR="${SPEC_FORGE_DIR:-/workspace/SpecForge}"
-GSM8K_PATH="${GSM8K_PATH:-${SPEC_FORGE_DIR}/gsm8k.jsonl}"
+# The repository carries the official labeled test set. Keep GSM8K_PATH
+# overrideable for a separately mounted evaluation split.
+GSM8K_PATH="${GSM8K_PATH:-${SGLANG_DIR}/datasets/gsm8k_test.jsonl}"
 MODEL_PATH="${MODEL_PATH:-/models/models/Qwen/Qwen2.5-72B-Instruct-AWQ}"
 DRAFT_MODEL_PATH="${DRAFT_MODEL_PATH:-/models/models/Qwen/Qwen3-0.6B}"
 
