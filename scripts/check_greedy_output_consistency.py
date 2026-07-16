@@ -90,11 +90,31 @@ def compare(args: argparse.Namespace) -> None:
     reference = [json.loads(line) for line in args.reference.read_text(encoding="utf-8").splitlines()]
     candidate = [json.loads(line) for line in args.candidate.read_text(encoding="utf-8").splitlines()]
     mismatches = []
+    first_difference = None
     for index, (left, right) in enumerate(zip(reference, candidate)):
         left_value = left.get("output_ids") or left.get("text")
         right_value = right.get("output_ids") or right.get("text")
         if left_value != right_value:
             mismatches.append(index)
+            if first_difference is None:
+                if isinstance(left_value, list) and isinstance(right_value, list):
+                    first_token = next(
+                        (
+                            position
+                            for position, (left_token, right_token) in enumerate(
+                                zip(left_value, right_value)
+                            )
+                            if left_token != right_token
+                        ),
+                        min(len(left_value), len(right_value)),
+                    )
+                    first_difference = (
+                        f"- First difference: request {index}, output token "
+                        f"{first_token}; static={left_value[first_token:first_token + 1]}, "
+                        f"ragged={right_value[first_token:first_token + 1]}\n"
+                    )
+                else:
+                    first_difference = f"- First difference: request {index} text differs\n"
     if len(reference) != len(candidate):
         mismatches.extend(range(min(len(reference), len(candidate)), max(len(reference), len(candidate))))
     report = (
@@ -102,7 +122,7 @@ def compare(args: argparse.Namespace) -> None:
         f"- Compared requests: {min(len(reference), len(candidate))}\n"
         f"- Mismatches: {len(mismatches)}\n"
         + (
-            f"- First mismatch indices: {mismatches[:20]}\n"
+            f"- First mismatch indices: {mismatches[:20]}\n{first_difference}"
             if mismatches
             else "- Result: PASS\n"
         )

@@ -91,6 +91,7 @@ start_server() {
         --speculative-suffix-enable
         --max-running-requests "${MAX_RUNNING_REQUESTS}"
         --attention-backend fa3
+        --enable-deterministic-inference
         --mem-fraction-static "${MEM_FRACTION_STATIC}"
         --tp-size "${TP_SIZE}"
         --host "${HOST}"
