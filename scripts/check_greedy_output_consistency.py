@@ -110,8 +110,10 @@ def compare(args: argparse.Namespace) -> None:
                     )
                     first_difference = (
                         f"- First difference: request {index}, output token "
-                        f"{first_token}; static={left_value[first_token:first_token + 1]}, "
-                        f"ragged={right_value[first_token:first_token + 1]}\n"
+                        f"{first_token}; {args.reference_label}="
+                        f"{left_value[first_token:first_token + 1]}, "
+                        f"{args.candidate_label}="
+                        f"{right_value[first_token:first_token + 1]}\n"
                     )
                 else:
                     first_difference = f"- First difference: request {index} text differs\n"
@@ -147,6 +149,8 @@ def main() -> None:
     compare_parser.add_argument("--reference", type=Path, required=True)
     compare_parser.add_argument("--candidate", type=Path, required=True)
     compare_parser.add_argument("--report", type=Path, required=True)
+    compare_parser.add_argument("--reference-label", default="static")
+    compare_parser.add_argument("--candidate-label", default="ragged")
     args = parser.parse_args()
     if args.command == "run":
         run(args)

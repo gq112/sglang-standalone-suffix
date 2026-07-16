@@ -35,6 +35,9 @@ HIGH_BS_THRESHOLD="${HIGH_BS_THRESHOLD:-20}"
 # Correctness isolation only. Set to 1 to run both static and ragged target
 # verification eagerly, removing CUDA-graph versus eager kernel differences.
 DISABLE_CUDA_GRAPH="${DISABLE_CUDA_GRAPH:-0}"
+# Set to 1 for a three-server diagnostic. It compares cold static K=4 with
+# static K=4 after the dynamic run's cache warmup before judging ragged.
+STATIC_WARMUP_CONTROL="${STATIC_WARMUP_CONTROL:-0}"
 SERVER_START_TIMEOUT="${SERVER_START_TIMEOUT:-900}"
 PRELOAD_LIBSTDCXX="${PRELOAD_LIBSTDCXX:-/usr/lib/x86_64-linux-gnu/libstdc++.so.6}"
 RESULTS_DIR="${RESULTS_DIR:-${SPEC_FORGE_DIR}/results/dynamic_k_gsm8k_$(date +%Y%m%d_%H%M%S)}"
@@ -201,6 +204,16 @@ fi
 snapshot_metrics after_accuracy
 cleanup_server
 
+if [[ "${DATASET_MODE}" == "prompt_only" && "${STATIC_WARMUP_CONTROL}" == "1" ]]; then
+    echo "========== suffix_static_k4_warmup_control =========="
+    start_server suffix_static_k4_warmup_control
+    run_prompt_comparison_client "${WARMUP_PATH}" "${WARMUP_QUESTIONS}" "${CURRENT_DIR}/warmup_outputs.jsonl"
+    snapshot_metrics after_warmup
+    run_prompt_comparison_client "${GSM8K_PATH}" "${NUM_QUESTIONS}" "${CURRENT_DIR}/outputs.jsonl"
+    snapshot_metrics after_accuracy
+    cleanup_server
+fi
+
 RAGGED_EXPERIMENT="ragged_dynamic_k${NORMAL_DRAFT_TOKENS}_k${LONG_DRAFT_TOKENS}"
 echo "========== ${RAGGED_EXPERIMENT} =========="
 start_server "${RAGGED_EXPERIMENT}" \
@@ -254,10 +267,23 @@ report.write_text(
 print(report.read_text(encoding="utf-8"), end="")
 PY
 else
+    static_warmup_status=0
+    if [[ "${STATIC_WARMUP_CONTROL}" == "1" ]]; then
+        python "${SGLANG_DIR}/scripts/check_greedy_output_consistency.py" compare \
+            --reference "${RESULTS_DIR}/suffix_static_k4/outputs.jsonl" \
+            --candidate "${RESULTS_DIR}/suffix_static_k4_warmup_control/outputs.jsonl" \
+            --reference-label "static_cold" \
+            --candidate-label "static_warmed" \
+            --report "${RESULTS_DIR}/static_warmup_consistency.md" || static_warmup_status=$?
+    fi
+    ragged_status=0
     python "${SGLANG_DIR}/scripts/check_greedy_output_consistency.py" compare \
         --reference "${RESULTS_DIR}/suffix_static_k4/outputs.jsonl" \
         --candidate "${RESULTS_DIR}/${RAGGED_EXPERIMENT}/outputs.jsonl" \
-        --report "${RESULTS_DIR}/greedy_output_comparison.md"
+        --report "${RESULTS_DIR}/greedy_output_comparison.md" || ragged_status=$?
+    if (( static_warmup_status != 0 || ragged_status != 0 )); then
+        exit 1
+    fi
 fi
 
 echo "Completed. Results: ${RESULTS_DIR}"
