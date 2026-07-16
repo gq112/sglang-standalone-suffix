@@ -650,8 +650,11 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
         target_predict[valid_mask] = target_predict_flat[padded_to_flat[valid_mask]]
         candidates[valid_mask] = self.draft_token[padded_to_flat[valid_mask]]
 
+        # The CUDA tree verifier indexes predictions in one flattened buffer
+        # (the regular fixed-K path allocates ``bs * K + 1`` as well). Only
+        # candidates and target predictions are two-dimensional trees.
         predict_padded = torch.empty(
-            (bs, max_k), dtype=torch.int32, device=batch.device
+            (bs * max_k + 1,), dtype=torch.int32, device=batch.device
         )
         accept_index_padded = torch.full(
             (bs, self.spec_steps + 1),
