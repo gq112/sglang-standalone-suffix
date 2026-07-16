@@ -68,6 +68,13 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
     seq_lens_sum: int
     seq_lens_cpu: torch.Tensor
     grammar: BaseGrammarObject = None
+    # Stage-one ragged target verification.  When set, every request owns
+    # `ragged_draft_token_nums[i]` contiguous tokens in `draft_token` instead
+    # of all requests sharing `draft_token_num`.
+    ragged_draft_token_nums: Optional[torch.Tensor] = None
+    ragged_cu_seqlens_q: Optional[torch.Tensor] = None
+    ragged_padded_to_flat: Optional[torch.Tensor] = None
+    ragged_long_suffix_mask: Optional[torch.Tensor] = None
 
     def __post_init__(self):
         super().__init__(SpecInputType.EAGLE_VERIFY)
@@ -76,6 +83,9 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
 
     def get_spec_adjust_token_coefficient(self) -> Tuple[int, int]:
         return self.draft_token_num, self.draft_token_num
+
+    def is_ragged_verify(self) -> bool:
+        return self.ragged_draft_token_nums is not None
 
     @classmethod
     def create_idle_input(cls, topk: int, spec_steps: int, num_verify_tokens: int):
@@ -112,7 +122,17 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
 
         batch.input_ids = self.draft_token
 
-        if page_size == 1:
+        if self.is_ragged_verify():
+            # The first ragged implementation deliberately supports the
+            # unpaged FA3 path only.  Paged-KV eviction needs a separate
+            # per-request page-alignment kernel.
+            assert page_size == 1
+            end_offset = batch.seq_lens + self.ragged_draft_token_nums
+            batch.out_cache_loc = alloc_token_slots(
+                batch.tree_cache,
+                len(batch.input_ids),
+            )
+        elif page_size == 1:
             batch.out_cache_loc = alloc_token_slots(
                 batch.tree_cache,
                 len(batch.input_ids),
@@ -206,6 +226,15 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
         tokens. I.e., logits_output.next_token_logits only contains
         accepted token logits.
         """
+        if self.is_ragged_verify():
+            return self._verify_ragged_greedy(
+                batch,
+                logits_output,
+                token_to_kv_pool_allocator,
+                page_size,
+                vocab_mask,
+            )
+
         if batch.forward_mode.is_idle():
             return EagleVerifyOutput(
                 draft_input=EagleDraftInput.create_idle_input(
@@ -581,6 +610,192 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
                 accept_length_per_req_cpu=accept_length_list,
                 accepted_indices=accept_index,
             )
+
+    def _verify_ragged_greedy(
+        self,
+        batch: ScheduleBatch,
+        logits_output: LogitsProcessorOutput,
+        token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
+        page_size: int,
+        vocab_mask: Optional[torch.Tensor],
+    ) -> "EagleVerifyOutput":
+        """Verify a topk=1 greedy K=4/K=8 batch without padding model logits.
+
+        FA3 consumes the flattened ragged query directly.  The existing tree
+        acceptance kernel still expects a rectangular index space, so only its
+        small integer inputs are padded to ``[bs, max_k]`` and accepted indices
+        are translated back to flattened FA3 token offsets afterwards.
+        """
+        assert not batch.forward_mode.is_idle()
+        assert self.topk == 1
+        assert page_size == 1
+        assert batch.sampling_info.is_all_greedy
+        assert not batch.has_grammar
+        assert vocab_mask is None
+        assert SIMULATE_ACC_LEN <= 0.0
+        assert self.ragged_padded_to_flat is not None
+
+        bs = self.retrive_index.shape[0]
+        max_k = self.draft_token_num
+        padded_to_flat = self.ragged_padded_to_flat
+        valid_mask = padded_to_flat >= 0
+
+        # Do not pad logits (which are vocabulary-sized). Only the integer
+        # candidate/prediction bookkeeping is rectangular.
+        target_predict_flat = torch.argmax(logits_output.next_token_logits, dim=-1)
+        target_predict = torch.full(
+            (bs, max_k), -1, dtype=torch.long, device=batch.device
+        )
+        candidates = torch.full_like(target_predict, -1)
+        target_predict[valid_mask] = target_predict_flat[padded_to_flat[valid_mask]]
+        candidates[valid_mask] = self.draft_token[padded_to_flat[valid_mask]]
+
+        predict_padded = torch.empty(
+            (bs, max_k), dtype=torch.int32, device=batch.device
+        )
+        accept_index_padded = torch.full(
+            (bs, self.spec_steps + 1),
+            -1,
+            dtype=torch.int32,
+            device=batch.device,
+        )
+        accept_length = torch.empty((bs,), dtype=torch.int32, device=batch.device)
+        _, accept_index_padded, accept_length = verify_tree_greedy_func(
+            predicts=predict_padded,
+            accept_index=accept_index_padded,
+            accept_token_num=accept_length,
+            candidates=candidates,
+            retrive_index=self.retrive_index,
+            retrive_next_token=self.retrive_next_token,
+            retrive_next_sibling=self.retrive_next_sibling,
+            target_predict=target_predict,
+            topk=self.topk,
+        )
+
+        accept_index = torch.full_like(accept_index_padded, -1)
+        valid_accept = accept_index_padded >= 0
+        accept_index[valid_accept] = padded_to_flat.reshape(-1)[
+            accept_index_padded[valid_accept].to(torch.long)
+        ].to(torch.int32)
+
+        unfinished_index = []
+        unfinished_accept_index = []
+        accept_index_cpu = accept_index.tolist()
+        predict_cpu = target_predict_flat.tolist()
+        ragged_widths_cpu = self.ragged_draft_token_nums.tolist()
+        has_finished = False
+
+        for i, (req, accept_index_row) in enumerate(zip(batch.reqs, accept_index_cpu)):
+            for j, idx in enumerate(accept_index_row):
+                if idx == -1:
+                    break
+                token_id = predict_cpu[idx]
+                req.output_ids.append(token_id)
+                req.check_finished()
+                if req.finished():
+                    has_finished = True
+                    accept_index[i, j + 1 :] = -1
+                    break
+            if not req.finished():
+                unfinished_index.append(i)
+                if idx == -1:
+                    unfinished_accept_index.append(accept_index[i, :j])
+                else:
+                    unfinished_accept_index.append(accept_index[i])
+            req.spec_verify_ct += 1
+            req.spec_accepted_tokens += (
+                sum(1 for accepted_idx in accept_index_row if accepted_idx != -1) - 1
+            )
+            req.spec_draft_tokens += ragged_widths_cpu[i] - 1
+
+        if has_finished:
+            accept_length = (accept_index != -1).sum(dim=1) - 1
+
+        accept_index = accept_index[accept_index != -1]
+        verified_id = target_predict_flat[accept_index]
+        evict_mask = torch.full_like(self.draft_token, True, dtype=torch.bool)
+        evict_mask[accept_index] = False
+        accept_length_cpu = accept_length.cpu()
+        accept_length_list = accept_length_cpu.tolist()
+        token_to_kv_pool_allocator.free(batch.out_cache_loc[evict_mask])
+
+        if not has_finished:
+            batch.out_cache_loc = batch.out_cache_loc[accept_index]
+            assign_req_to_token_pool_func(
+                batch.req_pool_indices,
+                batch.req_to_token_pool.req_to_token,
+                batch.seq_lens,
+                batch.seq_lens + accept_length + 1,
+                batch.out_cache_loc,
+                bs,
+            )
+            batch.seq_lens.add_(accept_length + 1)
+            batch.seq_lens_cpu.add_(accept_length_cpu + 1)
+
+            draft_input = EagleDraftInput(
+                hidden_states=batch.spec_info.hidden_states[accept_index],
+                verified_id=verified_id,
+                accept_length=accept_length,
+                accept_length_cpu=accept_length_list,
+                seq_lens_for_draft_extend=batch.seq_lens,
+                seq_lens_for_draft_extend_cpu=batch.seq_lens_cpu,
+                req_pool_indices_for_draft_extend=batch.req_pool_indices,
+            )
+            return EagleVerifyOutput(
+                draft_input=draft_input,
+                logits_output=logits_output,
+                verified_id=verified_id,
+                accept_length_per_req_cpu=draft_input.accept_length_cpu,
+                accepted_indices=accept_index,
+            )
+
+        assign_req_to_token_pool_func(
+            batch.req_pool_indices,
+            batch.req_to_token_pool.req_to_token,
+            batch.seq_lens,
+            batch.seq_lens + accept_length + 1,
+            batch.out_cache_loc[accept_index],
+            bs,
+        )
+        batch.seq_lens.add_(accept_length + 1)
+        batch.seq_lens_cpu.add_(accept_length_cpu + 1)
+
+        if unfinished_accept_index:
+            unfinished_accept_index = torch.cat(unfinished_accept_index)
+            unfinished_index_device = torch.tensor(
+                unfinished_index, dtype=torch.int64, device=target_predict_flat.device
+            )
+            draft_input_accept_length_cpu = [
+                accept_length_list[i] for i in unfinished_index
+            ]
+            batch.out_cache_loc = batch.out_cache_loc[unfinished_accept_index]
+            draft_input = EagleDraftInput(
+                hidden_states=batch.spec_info.hidden_states[unfinished_accept_index],
+                verified_id=target_predict_flat[unfinished_accept_index],
+                accept_length_cpu=draft_input_accept_length_cpu,
+                accept_length=accept_length[unfinished_index_device],
+                seq_lens_for_draft_extend=batch.seq_lens[unfinished_index_device],
+                seq_lens_for_draft_extend_cpu=batch.seq_lens_cpu[unfinished_index],
+                req_pool_indices_for_draft_extend=batch.req_pool_indices[
+                    unfinished_index_device
+                ],
+            )
+        else:
+            draft_input = EagleDraftInput.create_idle_input(
+                device=batch.device,
+                hidden_size=batch.model_config.hidden_size,
+                dtype=batch.model_config.dtype,
+                topk=self.topk,
+                capture_hidden_mode=CaptureHiddenMode.LAST,
+            )
+
+        return EagleVerifyOutput(
+            draft_input=draft_input,
+            logits_output=logits_output,
+            verified_id=verified_id,
+            accept_length_per_req_cpu=accept_length_list,
+            accepted_indices=accept_index,
+        )
 
 
 @dataclass

@@ -252,40 +252,54 @@ recovers 11.52% throughput versus K=4/4, but almost every remaining parent
 batch is still split into two serial target forwards. This directly explains
 why high K=8 acceptance does not yet turn into a net production gain.
 
-### Current rollout policy: homogeneous K=8 only
+### FA3 ragged variable-K: stage one
 
-The initial mixed-batch implementation above is retained as the measurement
-baseline, but it is no longer selected in the serving path. A batch now uses
-K=8 only when **every active request** qualifies for the long-suffix policy.
-If even one request does not qualify, the whole batch uses the regular K=4
-path (including ordinary K=4 suffix overrides). This guarantees one target
-verify forward per scheduler batch and removes split/merge overhead.
+The homogeneous-only policy was a safe interim rollout. FA3 stage one now
+re-enables a mixed K=4/K=8 batch when all of the following are true:
 
-It deliberately trades K=8 coverage for predictable throughput: K=8 may be
-rare under heterogeneous online traffic, but it cannot degrade a mixed batch
-by creating an additional serial target forward. Re-run the same experiment
-to compare this policy against suffix static K=4. The expected counters are
-`dynamic_k_mixed_verify_batch_total = 0`; any nonzero K=8 counters then come
-from homogeneous long-suffix batches.
+- `--attention-backend fa3`;
+- default `page_size=1`;
+- `topk=1`, greedy sampling, no grammar, no return-logprob.
+
+Rather than split the batch, the target query is flattened with per-request
+lengths and passed once to FA3 through `cu_seqlens_q`:
+
+```text
+K per request: [4, 8, 4]
+cu_seqlens_q:  [0, 4, 12, 16]
+```
+
+Only small integer acceptance tables are padded to `[batch, 8]`; the
+vocabulary-sized target logits remain ragged. Thus a mixed batch has exactly
+one target forward and no result merge. The existing
+`dynamic_k_mixed_verify_batch_total` remains zero because it measures the
+retired *two-forward split* implementation, not a ragged mixed batch.
+
+Stage one deliberately disables CUDA Graph replay only for the ragged target
+verify forward. Fixed-K K=4/K=8 paths keep their existing graph behavior.
+The next stage, if eager ragged throughput is beneficial, is a bounded graph
+cache keyed by `(batch_size, K=8 request count)`.
 
 ## Correctness Boundaries
 
 The first implementation intentionally keeps the dynamic-K path conservative:
 
 - only supports `topk=1`.
-- only enables sub-batch dynamic-K for greedy sampling.
-- disables dynamic-K split when grammar or return-logprob is active.
+- only enables ragged dynamic-K for FA3 with `page_size=1` and greedy
+  sampling.
+- falls back to the homogeneous K=4/K=8 policy for other backends, grammar,
+  or return-logprob.
 - disables overlap schedule for this mode.
-- each request enters only one sub-batch per decode round.
-- sub-batches are merged back by original request index.
+- every request remains in its original scheduler batch and occupies one
+  variable-length FA3 query segment.
 
 These constraints avoid:
 
 - random sampling order changes.
 - logprob alignment errors.
 - grammar state mismatch.
-- KV cache double-free.
-- next-round draft input misalignment.
+- paged-KV eviction before its ragged page-alignment implementation.
+- CUDA Graph shape/cache explosion before bounded ragged graph caching.
 
 ## Difference From Previous Fixed-K Fusion
 
@@ -307,7 +321,9 @@ suffix-long requests -> K=8 graph
 standalone/default requests -> K=4 graph
 ```
 
-This is the key improvement: long suffix hits keep their value without forcing the whole batch into the larger verify window.
+With stage-one FA3 ragged verification, this becomes one variable-length FA3
+forward rather than two serial graphs. Long suffix hits keep their value
+without forcing normal requests into a K=8 target query.
 
 ## Implementation Files
 
@@ -315,11 +331,13 @@ Main files changed:
 
 - `python/sglang/srt/speculative/eagle_worker.py`
   - request-level dynamic-K classification
-  - K=4/K=8 verify input construction
-  - sub-batch verify and result merge
+  - ragged K=4/K=8 verify input construction
+- `python/sglang/srt/speculative/eagle_info.py`
+  - ragged greedy acceptance and page-size-one KV reclamation
+- `python/sglang/srt/layers/attention/flashattention_backend.py`
+  - FA3 target-verify `cu_seqlens_q` metadata
 - `python/sglang/srt/model_executor/cuda_graph_runner.py`
-  - CUDA graph keyed by `(K, bs_bucket)`
-  - active K-aware capture and replay
+  - eager-only guard for ragged target verification
 - `python/sglang/srt/server_args.py`
   - dynamic-K flags and validation
 

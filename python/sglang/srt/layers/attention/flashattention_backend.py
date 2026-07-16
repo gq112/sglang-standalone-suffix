@@ -489,20 +489,40 @@ class FlashAttentionBackend(AttentionBackend):
                 forward_batch.spec_info
             )
             if self.topk <= 1:
-                metadata.cache_seqlens_int32 = (
-                    forward_batch.seq_lens + draft_token_num
-                ).to(torch.int32)
-                metadata.max_seq_len_q = draft_token_num
-                metadata.max_seq_len_k = (
-                    forward_batch.seq_lens_cpu.max().item() + draft_token_num
+                ragged_widths = getattr(
+                    forward_batch.spec_info, "ragged_draft_token_nums", None
                 )
-                metadata.cu_seqlens_q = torch.arange(
-                    0,
-                    batch_size * draft_token_num + 1,
-                    draft_token_num,
-                    dtype=torch.int32,
-                    device=device,
-                )
+                if ragged_widths is not None:
+                    # FA3 natively supports a varlen query through
+                    # cu_seqlens_q.  This is used by mixed dynamic K=4/K=8
+                    # target verification and intentionally remains eager
+                    # until graph caching for ragged token counts is added.
+                    metadata.cache_seqlens_int32 = (
+                        forward_batch.seq_lens + ragged_widths
+                    ).to(torch.int32)
+                    # The ragged builder records the fixed maximum width, so
+                    # metadata setup does not need a GPU scalar readback.
+                    metadata.max_seq_len_q = draft_token_num
+                    metadata.max_seq_len_k = (
+                        forward_batch.seq_lens_cpu.max().item()
+                        + metadata.max_seq_len_q
+                    )
+                    metadata.cu_seqlens_q = forward_batch.spec_info.ragged_cu_seqlens_q
+                else:
+                    metadata.cache_seqlens_int32 = (
+                        forward_batch.seq_lens + draft_token_num
+                    ).to(torch.int32)
+                    metadata.max_seq_len_q = draft_token_num
+                    metadata.max_seq_len_k = (
+                        forward_batch.seq_lens_cpu.max().item() + draft_token_num
+                    )
+                    metadata.cu_seqlens_q = torch.arange(
+                        0,
+                        batch_size * draft_token_num + 1,
+                        draft_token_num,
+                        dtype=torch.int32,
+                        device=device,
+                    )
                 metadata.cu_seqlens_k = torch.nn.functional.pad(
                     torch.cumsum(
                         metadata.cache_seqlens_int32, dim=0, dtype=torch.int32

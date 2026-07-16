@@ -418,6 +418,15 @@ class CudaGraphRunner:
         return self.num_tokens_per_bs
 
     def can_run(self, forward_batch: ForwardBatch):
+        # Ragged K=4/K=8 target verification has a dynamic total query-token
+        # count. Stage one keeps it eager rather than capturing a graph for
+        # every (batch_size, number_of_K8_requests) combination.
+        if getattr(
+            getattr(forward_batch, "spec_info", None),
+            "ragged_draft_token_nums",
+            None,
+        ) is not None:
+            return False
         num_tokens_per_bs = self._get_num_tokens_per_bs(forward_batch)
         if num_tokens_per_bs not in self.capture_num_tokens_per_bs_values:
             return False

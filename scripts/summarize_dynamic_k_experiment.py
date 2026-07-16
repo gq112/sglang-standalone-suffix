@@ -135,7 +135,7 @@ def write_throughput_comparison(results_dir: Path) -> None:
         "Primary metric: total end-to-end output throughput (token/s). "
         "Positive dynamic deltas are better.",
         "",
-        "| Concurrency | No speculation | Standalone K=4 | Suffix static K=4 | Dynamic K=4/4 | Dynamic K=4/8 | K=4/4 vs static | K=4/8 vs K=4/4 | K=4/8 vs static |",
+        "| Concurrency | No speculation | Standalone K=4 | Suffix static K=4 | Dynamic K=4/4 control | Ragged K=4/8 | K=4/4 vs static | Ragged K=4/8 vs K=4/4 | Ragged K=4/8 vs static |",
         "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for concurrency, config_rows in sorted(by_concurrency.items()):

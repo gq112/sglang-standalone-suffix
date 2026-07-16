@@ -218,8 +218,9 @@ Interpret the counters in metrics_after_k8_probe_focus.prom (filter tp_rank="0")
 Primary comparisons:
   standalone_k4 vs no_speculation: standalone speculative-decoding benefit.
   suffix_static_k4 vs standalone_k4: suffix-cache net benefit/cost.
-  dynamic_k4_k4 vs suffix_static_k4: split/serial-verify/merge overhead.
-  dynamic_k4_k8 vs dynamic_k4_k4: net value of widening long suffix to K=8.
+  dynamic_k4_k4 vs suffix_static_k4: dynamic-K classifier/control overhead.
+  dynamic_k4_k8 vs dynamic_k4_k4: net value of widening long suffix to K=8
+  with one FA3 ragged target forward (on supported mixed batches).
   dynamic_k4_k8 vs suffix_static_k4: overall dynamic-K net benefit. Use the
   individual measurement_bs10, measurement_bs20, and measurement_bs24 results.
 EOF
