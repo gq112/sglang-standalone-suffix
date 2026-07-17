@@ -1578,7 +1578,8 @@ class EAGLEWorker(TpModelWorker):
         if self._long_suffix_draft_token_num <= self._normal_draft_token_num:
             return
         long_count = spec_info.ragged_long_suffix_count
-        if long_count / batch.batch_size() < self._ragged_cuda_graph_min_long_ratio:
+        min_long_ratio = getattr(self, "_ragged_cuda_graph_min_long_ratio", 0.75)
+        if long_count / batch.batch_size() < min_long_ratio:
             return
         graph_runner = getattr(self.target_worker.model_runner, "graph_runner", None)
         if graph_runner is None or not graph_runner.can_run_ragged_target_verify(

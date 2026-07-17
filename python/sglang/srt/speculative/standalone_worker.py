@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Optional
 
 import torch
@@ -48,6 +49,17 @@ class StandaloneWorker(EAGLEWorker):
         # dynamic-K state explicitly instead of relying on EAGLEWorker.__init__.
         self._suffix_proposer = None
         self._last_suffix_status = None
+        self._ragged_cuda_graph_min_long_ratio = min(
+            1.0,
+            max(
+                0.0,
+                float(
+                    os.environ.get(
+                        "SGLANG_RAGGED_CUDA_GRAPH_MIN_LONG_RATIO", "0.75"
+                    )
+                ),
+            ),
+        )
         self._dynamic_k_enable = (
             server_args.speculative_dynamic_k_enable
             and server_args.speculative_suffix_enable
