@@ -1049,6 +1049,18 @@ class EagleDraftInput(SpecInput, EagleDraftInputV2Mixin):
             return
         if spec_info.hidden_states is None:
             return
+        # An idle/finished target-verify result can carry an empty hidden
+        # tensor shaped with the target model width, while active standalone
+        # draft rows use the draft-model width. Empty rows have no draft work
+        # to preserve, so never concatenate them across model widths.
+        if self.hidden_states.shape[0] == 0:
+            self.hidden_states = spec_info.hidden_states
+            self.verified_id = spec_info.verified_id
+            self.topk_p = spec_info.topk_p
+            self.topk_index = spec_info.topk_index
+            return
+        if spec_info.hidden_states.shape[0] == 0:
+            return
         self.hidden_states = torch.cat(
             [self.hidden_states, spec_info.hidden_states], axis=0
         )
