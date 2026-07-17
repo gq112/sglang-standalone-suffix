@@ -82,7 +82,7 @@ wait_for_server() {
 snapshot_metrics() {
     local name="$1"
     curl --fail --silent --show-error "${CLIENT_BASE_URL}/metrics" > "${CURRENT_DIR}/metrics_${name}.prom"
-    grep -E '^sglang:(suffix_|dynamic_k|spec_accept_)' "${CURRENT_DIR}/metrics_${name}.prom" \
+    grep -E '^sglang:(suffix_|dynamic_k|ragged_|spec_accept_)' "${CURRENT_DIR}/metrics_${name}.prom" \
         > "${CURRENT_DIR}/metrics_${name}_focus.prom" || true
 }
 
@@ -263,7 +263,9 @@ report.write_text(
     f"| FA3 ragged dynamic K | {ragged:.3f} |\n\n"
     f"Delta: {(ragged - static) * 100:+.2f} percentage points.\n\n"
     "Ragged coverage: inspect the `ragged_dynamic_k*/metrics_after_accuracy_focus.prom` file; "
-    "`dynamic_k8_request_total` must be nonzero.\n",
+    "`dynamic_k8_request_total` must be nonzero. CUDA-graph coverage is "
+    "`ragged_verify_cuda_graph_batch_total / (ragged_verify_cuda_graph_batch_total + "
+    "ragged_verify_eager_batch_total)`.\n",
     encoding="utf-8",
 )
 print(report.read_text(encoding="utf-8"), end="")

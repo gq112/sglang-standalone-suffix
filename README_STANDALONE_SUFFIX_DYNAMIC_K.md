@@ -52,6 +52,9 @@ This keeps the implementation chain-based and avoids tree verification complexit
    - fixed-width inputs retain their normal CUDA-graph path.
    - a ragged mixed input issues **one** FA3 target forward; it does not split
      the batch or merge two verify results.
+   - when at least 75% of rows are K=8, the mixed input is padded per row to
+     K=8 and replays the existing fixed-K=8 CUDA Graph. The synthetic K=4
+     tails are never accepted and their KV slots are released immediately.
 6. Greedy acceptance maps the flattened accepted indices back to each request,
    then advances `seq_lens`, KV ownership, `verified_id`, and the next-round
    `EagleDraftInput`.
@@ -69,9 +72,12 @@ The graph shape is fixed per `(K, bs_bucket)`, but token values remain dynamic.
 This means suffix token contents can change every round while still reusing the
 same CUDA graph, as long as the verify width and padded batch bucket match.
 
-Stage-one ragged K=4/8 verification is eager. The follow-up optimization is a
-bounded ragged graph cache with graph-owned width and `cu_seqlens_q` buffers;
-the graph/eager coverage counters described below are the rollout gate.
+Mixed ragged batches use eager FA3 by default. A bounded graph path reuses the
+existing K=8 graph when the K=8 row ratio is at least 75%; it pads only the
+unobserved causal suffix of K=4 rows and frees those cache slots after verify.
+Set `SGLANG_RAGGED_CUDA_GRAPH_MIN_LONG_RATIO` (default `0.75`) to tune this
+coverage/per-row-padding trade-off. The graph/eager coverage counters below
+are the rollout gate.
 
 ## Configuration
 
@@ -341,10 +347,13 @@ one target forward and no result merge. The existing
 `dynamic_k_mixed_verify_batch_total` remains zero because it measures the
 retired *two-forward split* implementation, not a ragged mixed batch.
 
-Stage one deliberately disables CUDA Graph replay only for the ragged target
-verify forward. Fixed-K K=4/K=8 paths keep their existing graph behavior.
-The next stage, if eager ragged throughput is beneficial, is a bounded graph
-cache keyed by `(batch_size, K=8 request count)`.
+The bounded graph path does not create a graph for every `(batch_size, K=8
+request count)` pair. When K=8 coverage reaches the configured ratio, it lays
+out each row as K=8, preserves the real K=4/K=8 acceptance mask, and replays
+the ordinary K=8 graph. Causal attention makes each real K=4 prefix identical
+to its eager ragged computation; padded tail KV slots are evicted before the
+next round. Lower-coverage mixed batches remain eager so they do not pay the
+full K=8 compute cost.
 
 ### GSM8K accuracy regression
 
@@ -419,7 +428,7 @@ Main files changed:
 - `python/sglang/srt/layers/attention/flashattention_backend.py`
   - FA3 target-verify `cu_seqlens_q` metadata
 - `python/sglang/srt/model_executor/cuda_graph_runner.py`
-  - eager-only guard for ragged target verification
+  - bounded fixed-K graph eligibility for padded ragged verification
 - `python/sglang/srt/server_args.py`
   - dynamic-K flags and validation
 

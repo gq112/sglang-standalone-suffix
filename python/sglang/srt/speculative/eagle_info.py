@@ -75,6 +75,12 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
     ragged_cu_seqlens_q: Optional[torch.Tensor] = None
     ragged_padded_to_flat: Optional[torch.Tensor] = None
     ragged_long_suffix_mask: Optional[torch.Tensor] = None
+    # A bounded CUDA-graph replay can pad every ragged row to ``draft_token_num``.
+    # ``ragged_padded_to_flat`` then indexes graph logits, while this field keeps
+    # the original compact draft-token offsets used to build candidates.
+    ragged_padded_to_draft_flat: Optional[torch.Tensor] = None
+    ragged_cuda_graph_padded: bool = False
+    ragged_long_suffix_count: int = 0
 
     def __post_init__(self):
         super().__init__(SpecInputType.EAGLE_VERIFY)
@@ -128,6 +134,43 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
             # per-request page-alignment kernel.
             assert page_size == 1
             end_offset = batch.seq_lens + self.ragged_draft_token_nums
+
+            if self.ragged_cuda_graph_padded:
+                # CUDA Graph needs a fixed ``bs * max_k`` input shape. Pad
+                # only after each row's real candidate chain. Causal FA keeps
+                # real-prefix logits unchanged; synthetic tails are freed by
+                # ragged verification.
+                assert self.ragged_padded_to_flat is not None
+                bs = batch.batch_size()
+                max_k = self.draft_token_num
+                compact_to_model = self.ragged_padded_to_flat
+                valid_mask = compact_to_model >= 0
+                self.ragged_padded_to_draft_flat = compact_to_model
+                self.ragged_padded_to_flat = torch.arange(
+                    bs * max_k, dtype=torch.long, device=batch.device
+                ).view(bs, max_k)
+
+                padded_input_ids = torch.empty(
+                    (bs, max_k), dtype=self.draft_token.dtype, device=batch.device
+                )
+                # Repeating the final real candidate yields valid ids for the
+                # unobserved causal suffix.
+                last_compact = compact_to_model[
+                    torch.arange(bs, device=batch.device),
+                    self.ragged_draft_token_nums.to(torch.long) - 1,
+                ]
+                padded_input_ids.copy_(
+                    self.draft_token[last_compact].unsqueeze(1).expand(-1, max_k)
+                )
+                padded_input_ids[valid_mask] = self.draft_token[
+                    compact_to_model[valid_mask]
+                ]
+                batch.input_ids = padded_input_ids.flatten()
+                self.positions = (
+                    batch.seq_lens.to(torch.long).unsqueeze(1)
+                    + torch.arange(max_k, dtype=torch.long, device=batch.device)
+                ).flatten()
+                end_offset = batch.seq_lens + max_k
             batch.out_cache_loc = alloc_token_slots(
                 batch.tree_cache,
                 len(batch.input_ids),
@@ -638,7 +681,12 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
         bs = self.retrive_index.shape[0]
         max_k = self.draft_token_num
         padded_to_flat = self.ragged_padded_to_flat
-        valid_mask = padded_to_flat >= 0
+        draft_padded_to_flat = (
+            self.ragged_padded_to_draft_flat
+            if self.ragged_padded_to_draft_flat is not None
+            else padded_to_flat
+        )
+        valid_mask = draft_padded_to_flat >= 0
 
         # Do not pad logits (which are vocabulary-sized). Only the integer
         # candidate/prediction bookkeeping is rectangular.
@@ -648,7 +696,9 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
         )
         candidates = torch.full_like(target_predict, -1)
         target_predict[valid_mask] = target_predict_flat[padded_to_flat[valid_mask]]
-        candidates[valid_mask] = self.draft_token[padded_to_flat[valid_mask]]
+        candidates[valid_mask] = self.draft_token[
+            draft_padded_to_flat[valid_mask]
+        ]
 
         # The CUDA tree verifier indexes predictions in one flattened buffer
         # (the regular fixed-K path allocates ``bs * K + 1`` as well). Only
@@ -716,7 +766,15 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
 
         accept_index = accept_index[accept_index != -1]
         verified_id = target_predict_flat[accept_index]
-        evict_mask = torch.full_like(self.draft_token, True, dtype=torch.bool)
+        # The graph-padded path owns cache slots for every ``max_k`` row, not
+        # just the compact draft-token tensor. Free rejected real tokens and
+        # synthetic suffix slots together.
+        evict_mask = torch.full(
+            (batch.out_cache_loc.numel(),),
+            True,
+            dtype=torch.bool,
+            device=batch.device,
+        )
         evict_mask[accept_index] = False
         accept_length_cpu = accept_length.cpu()
         accept_length_list = accept_length_cpu.tolist()

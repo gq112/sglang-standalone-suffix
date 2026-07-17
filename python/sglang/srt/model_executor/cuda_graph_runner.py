@@ -418,14 +418,14 @@ class CudaGraphRunner:
         return self.num_tokens_per_bs
 
     def can_run(self, forward_batch: ForwardBatch):
-        # Ragged K=4/K=8 target verification has a dynamic total query-token
-        # count. Stage one keeps it eager rather than capturing a graph for
-        # every (batch_size, number_of_K8_requests) combination.
-        if getattr(
-            getattr(forward_batch, "spec_info", None),
-            "ragged_draft_token_nums",
-            None,
-        ) is not None:
+        spec_info = getattr(forward_batch, "spec_info", None)
+        # Mixed K=4/K=8 target verification normally has a dynamic total
+        # query-token count. The bounded replay path explicitly pads it to
+        # the captured K=8 shape; unpadded ragged batches remain eager.
+        if (
+            getattr(spec_info, "ragged_draft_token_nums", None) is not None
+            and not getattr(spec_info, "ragged_cuda_graph_padded", False)
+        ):
             return False
         num_tokens_per_bs = self._get_num_tokens_per_bs(forward_batch)
         if num_tokens_per_bs not in self.capture_num_tokens_per_bs_values:
@@ -495,6 +495,25 @@ class CudaGraphRunner:
             and is_tbo_supported
             and capture_hidden_mode_matches
             and is_ngram_supported
+        )
+
+    def can_run_ragged_target_verify(
+        self, batch_size: int, draft_token_num: int
+    ) -> bool:
+        """Check whether a mixed-K batch can use an existing fixed-K graph.
+
+        This pre-check runs before cache slots are allocated. ``can_run``
+        repeats the full validation after the padded ``ForwardBatch`` exists.
+        """
+        if self.model_runner.server_args.disable_cuda_graph:
+            return False
+        if draft_token_num not in self.capture_num_tokens_per_bs_values:
+            return False
+        if self.disable_padding:
+            return (draft_token_num, batch_size) in self.graphs
+        return (
+            batch_size <= self.max_bs
+            and (draft_token_num, self.capture_bs[-1]) in self.graphs
         )
 
     def capture(self) -> None:

@@ -492,6 +492,14 @@ class FlashAttentionBackend(AttentionBackend):
                 ragged_widths = getattr(
                     forward_batch.spec_info, "ragged_draft_token_nums", None
                 )
+                # Bounded ragged CUDA-graph replay pads every request to the
+                # captured maximum width. It reuses the normal fixed-K
+                # metadata and graph instead of requiring a graph for every
+                # possible number of K=8 rows.
+                if getattr(
+                    forward_batch.spec_info, "ragged_cuda_graph_padded", False
+                ):
+                    ragged_widths = None
                 if ragged_widths is not None:
                     # FA3 natively supports a varlen query through
                     # cu_seqlens_q.  This is used by mixed dynamic K=4/K=8

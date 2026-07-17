@@ -1,7 +1,8 @@
-import logging
-import time
 import dataclasses
 import copy
+import logging
+import os
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -121,6 +122,17 @@ class EAGLEWorker(TpModelWorker):
         self._dynamic_k_long_verify_call_count = 0
         self._ragged_verify_cuda_graph_batch_count = 0
         self._ragged_verify_eager_batch_count = 0
+        self._ragged_cuda_graph_min_long_ratio = min(
+            1.0,
+            max(
+                0.0,
+                float(
+                    os.environ.get(
+                        "SGLANG_RAGGED_CUDA_GRAPH_MIN_LONG_RATIO", "0.75"
+                    )
+                ),
+            ),
+        )
         self._dynamic_k_enable = (
             server_args.speculative_dynamic_k_enable
             and server_args.speculative_suffix_enable
@@ -843,6 +855,7 @@ class EAGLEWorker(TpModelWorker):
             ragged_cu_seqlens_q=ragged_cu_seqlens_q,
             ragged_padded_to_flat=padded_to_flat,
             ragged_long_suffix_mask=long_mask,
+            ragged_long_suffix_count=len(long_suffix_indices),
         )
 
     def _can_use_ragged_dynamic_k(
@@ -1391,6 +1404,7 @@ class EAGLEWorker(TpModelWorker):
         if isinstance(spec_info, DynamicKVerifyInput):
             return self._verify_dynamic_k(batch, spec_info)
 
+        self._maybe_enable_ragged_cuda_graph_padding(batch, spec_info)
         spec_info.prepare_for_verify(batch, self.page_size)
         batch.return_hidden_states = False
         batch.forward_mode = (
@@ -1554,6 +1568,24 @@ class EAGLEWorker(TpModelWorker):
         batch.spec_info = res.draft_input
 
         return logits_output, res, model_worker_batch, can_run_cuda_graph
+
+    def _maybe_enable_ragged_cuda_graph_padding(
+        self, batch: ScheduleBatch, spec_info: EagleVerifyInput
+    ) -> None:
+        """Pad high-K8-coverage ragged batches onto the existing K=8 graph."""
+        if not getattr(spec_info, "is_ragged_verify", lambda: False)():
+            return
+        if self._long_suffix_draft_token_num <= self._normal_draft_token_num:
+            return
+        long_count = spec_info.ragged_long_suffix_count
+        if long_count / batch.batch_size() < self._ragged_cuda_graph_min_long_ratio:
+            return
+        graph_runner = getattr(self.target_worker.model_runner, "graph_runner", None)
+        if graph_runner is None or not graph_runner.can_run_ragged_target_verify(
+            batch.batch_size(), spec_info.draft_token_num
+        ):
+            return
+        spec_info.ragged_cuda_graph_padded = True
 
     def _verify_dynamic_k(
         self, batch: ScheduleBatch, spec_info: DynamicKVerifyInput

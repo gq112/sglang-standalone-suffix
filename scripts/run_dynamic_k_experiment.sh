@@ -219,9 +219,8 @@ Interpret the counters in metrics_after_k8_probe_focus.prom (filter tp_rank="0")
   sglang:ragged_verify_cuda_graph_batch_total /
   (sglang:ragged_verify_cuda_graph_batch_total +
    sglang:ragged_verify_eager_batch_total)
-      Ragged target-verify CUDA-graph hit rate. The current phase-one
-      implementation is expected to be eager-only; this is the gate for the
-      next CUDA-graph implementation.
+      Ragged target-verify CUDA-graph hit rate. High-K=8-coverage mixed
+      batches reuse the fixed-K=8 graph; low-coverage batches remain eager.
   sglang:suffix_override_total / sglang:suffix_proposal_total
       Fraction of suffix proposals that were strong enough to replace K=4
       standalone draft tokens.
