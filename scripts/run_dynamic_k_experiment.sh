@@ -34,6 +34,7 @@ GPU_IDS="${GPU_IDS:-}"
 MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.72}"
 MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-32}"
 ATTENTION_BACKEND="${ATTENTION_BACKEND:-fa3}"
+HIGH_BS_THRESHOLD="${HIGH_BS_THRESHOLD:-20}"
 PRELOAD_LIBSTDCXX="${PRELOAD_LIBSTDCXX:-/usr/lib/x86_64-linux-gnu/libstdc++.so.6}"
 
 # The measured workload is kept identical to the command supplied by the user.
@@ -205,6 +206,8 @@ Each configuration has a server.log, warmup.log, k8_probe.log,
 per-concurrency measurement logs, Prometheus snapshots, and isolated CSV
 artifacts under *_artifacts/.
 
+Dynamic-K policy: HIGH_BS_THRESHOLD=${HIGH_BS_THRESHOLD}
+
 Interpret the counters in metrics_after_k8_probe_focus.prom (filter tp_rank="0"):
   sglang:dynamic_k8_request_total
       Must increase in the dynamic_k4_k8 run. Zero means K=8 never triggered.
@@ -256,7 +259,7 @@ run_experiment "dynamic_k4_k4" \
     --speculative-normal-draft-token-num 4 \
     --speculative-long-suffix-draft-token-num 4 \
     --speculative-long-suffix-min-match-len 7 \
-    --speculative-high-bs-threshold 20
+    --speculative-high-bs-threshold "${HIGH_BS_THRESHOLD}"
 run_experiment "dynamic_k4_k8" \
     --speculative-draft-model-path "${DRAFT_MODEL_PATH}" \
     --speculative-algorithm STANDALONE \
@@ -268,7 +271,7 @@ run_experiment "dynamic_k4_k8" \
     --speculative-normal-draft-token-num 4 \
     --speculative-long-suffix-draft-token-num 8 \
     --speculative-long-suffix-min-match-len 7 \
-    --speculative-high-bs-threshold 20
+    --speculative-high-bs-threshold "${HIGH_BS_THRESHOLD}"
 
 python "${SGLANG_DIR}/scripts/summarize_dynamic_k_experiment.py" "${RESULTS_DIR}" \
     | tee "${RESULTS_DIR}/dynamic_k_metric_summary.tsv"

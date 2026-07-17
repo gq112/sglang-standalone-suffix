@@ -44,32 +44,34 @@ This keeps the implementation chain-based and avoids tree verification complexit
    - otherwise, requests with suffix `match_len >= speculative_long_suffix_min_match_len` and enough suffix tokens enter the K=8 group.
    - all remaining requests enter the K=4 group.
 4. Build verify inputs:
-   - K=4 group uses standalone draft tokens, with suffix-short row overrides when applicable.
-   - K=8 group uses a linear suffix chain.
-5. Verify the sub-batches serially:
-   - K=4 sub-batch uses the K=4 target verify path.
-   - K=8 sub-batch uses the K=8 target verify path.
-6. Merge verify results back in original request order:
-   - `req.output_ids`
-   - `seq_lens`
-   - `seq_lens_cpu`
-   - `out_cache_loc`
-   - `verified_id`
-   - `accept_length`
-   - next-round `EagleDraftInput`
+   - a homogeneous batch uses the fixed K=4 or K=8 input.
+   - a supported mixed FA3 batch uses one flattened ragged input: K=4
+     rows use the standalone/suffix-short chain and K=8 rows use the linear
+     suffix chain.
+5. Target verify:
+   - fixed-width inputs retain their normal CUDA-graph path.
+   - a ragged mixed input issues **one** FA3 target forward; it does not split
+     the batch or merge two verify results.
+6. Greedy acceptance maps the flattened accepted indices back to each request,
+   then advances `seq_lens`, KV ownership, `verified_id`, and the next-round
+   `EagleDraftInput`.
 
 ## CUDA Graph Handling
 
-The target verify CUDA graph is extended from a single batch-size key to a `(K, bs_bucket)` key.
+Fixed-width target verify CUDA graphs are keyed by `(K, bs_bucket)`.
 
 For dynamic-K standalone+suffix, the graph runner captures and replays at least:
 
 - K=4 graphs for normal requests.
-- K=8 graphs for low-batch long suffix requests.
+- K=8 graphs for homogeneous low-batch long suffix requests.
 
-The graph shape is fixed per `(K, bs_bucket)`, but token values remain dynamic. This means suffix token contents can change every round while still reusing the same CUDA graph, as long as the verify width and padded batch bucket match.
+The graph shape is fixed per `(K, bs_bucket)`, but token values remain dynamic.
+This means suffix token contents can change every round while still reusing the
+same CUDA graph, as long as the verify width and padded batch bucket match.
 
-The implementation allocates graph buffers according to the maximum configured K, then slices by the active K during capture and replay.
+Stage-one ragged K=4/8 verification is eager. The follow-up optimization is a
+bounded ragged graph cache with graph-owned width and `cu_seqlens_q` buffers;
+the graph/eager coverage counters described below are the rollout gate.
 
 ## Configuration
 
@@ -103,6 +105,49 @@ Interpretation:
   active decode batch below 20 can use K=8; batches at or above 20 use K=4.
 
 ## Benchmark Record (2026-07-15)
+
+### Latest FA3 ragged result (2026-07-16)
+
+The current implementation was re-measured with the one-command deployment
+benchmark on the repeated-data workload, FA3, TP=4, a K=4 normal width, a K=8
+long-suffix width, and `--speculative-high-bs-threshold 20`. The primary
+metric is total end-to-end output throughput. Positive deltas favor ragged
+K=4/8 over suffix static K=4.
+
+| Concurrent requests | Suffix static K=4 | Dynamic K=4/4 control | FA3 ragged K=4/8 | Ragged vs static | Ragged vs K=4/4 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | 308.60 | 272.62 | **322.98** | **+4.66%** | +18.47% |
+| 20 | 438.78 | 433.32 | **442.07** | **+0.75%** | +2.02% |
+| 24 | 374.35 | 372.45 | **383.15** | **+2.35%** | +2.87% |
+
+The dynamic K=4/4 control is slower than static K=4 (`-11.66%`, `-1.24%`,
+and `-0.51%`), which measures the request-level classification and ragged
+eager overhead. Widening suffix-long rows to K=8 more than repays that cost
+in this workload, producing a net throughput gain at every measured
+concurrency.
+
+The K=8 probe confirmed 6,243 K=8 request rounds, 44,149 committed output
+tokens, and 49,944 K=8 target-verify tokens, for `0.884` committed-token
+efficiency. `dynamic_k_mixed_verify_batch_total` remained zero and
+`dynamic_k_long_verify_call_total == dynamic_k_verify_batch_total == 2,055`:
+mixed K=4/K=8 work used one ragged target forward rather than the retired
+two-forward split.
+
+Latency remains the trade-off: ragged K=4/8 raised mean TTFT/ITL at 10, 20,
+and 24 concurrency despite increasing aggregate output throughput. Therefore
+the current policy is throughput-oriented. The next optimization target is
+ragged CUDA Graph replay; track
+`ragged_verify_cuda_graph_batch_total / (ragged_verify_cuda_graph_batch_total
++ ragged_verify_eager_batch_total)` after it is enabled.
+
+### Accuracy validation (2026-07-16)
+
+The official labeled GSM8K test split is stored at `datasets/gsm8k_test.jsonl`.
+On the first 200 questions with TP=4, greedy decoding, and active K=8 coverage,
+suffix static K=4 and FA3 ragged K=4/8 both achieved `0.945` accuracy
+(189/200). The dynamic run recorded 1,130 K=8 request rounds and `0.891`
+K=8 committed-token efficiency, so this is an exercised K=8 correctness
+result rather than a K=4 fallback result.
 
 ### Scope and method
 
