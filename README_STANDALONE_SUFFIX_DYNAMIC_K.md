@@ -176,6 +176,26 @@ concurrency 20, mean TTFT rose from 1,213.81 ms (static K=4) to 1,714.24 ms
 `--speculative-high-bs-threshold 24` only when aggregate throughput is the
 priority; retain 20 or lower when latency is more important.
 
+### Bounded CUDA-Graph validation (2026-07-17)
+
+The padded K=8 graph path was first checked with `SGLANG_RAGGED_CUDA_GRAPH_MIN_LONG_RATIO=0` on 20 labeled GSM8K questions. Static K=4 and dynamic K=4/8 both achieved `0.600` accuracy, while the dynamic run recorded 86 ragged CUDA-graph batches and no eager ragged batches. This validates that graph replay preserves greedy answers in the exercised run.
+
+On the repeated-data throughput workload with the default ratio `0.75`, the
+latest run at `dynamic_k_20260717_173642` measured:
+
+| Concurrent requests | Static K=4 tok/s | Ragged K=4/8 tok/s | Dynamic vs static | Graph hit rate |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 363.44 | 385.88 | **+6.17%** | 13.94% |
+| 20 | 377.17 | 407.90 | **+8.15%** | 12.95% |
+| 24 | 371.04 | 381.73 | **+2.88%** | 17.54% |
+
+The graph rate is low because K=8 proposals are distributed across many mixed
+batches; few batches reach 75% K=8 rows. These are promising end-to-end
+results, but not an isolated graph-speedup claim. Use
+`scripts/run_ragged_cuda_graph_ratio_sweep.sh` to compare eager (`1.0`) with
+ratios `0.75`, `0.60`, and `0.50` under the same workload before changing the
+production default.
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
