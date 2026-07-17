@@ -34,7 +34,9 @@ GPU_IDS="${GPU_IDS:-}"
 MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.72}"
 MAX_RUNNING_REQUESTS="${MAX_RUNNING_REQUESTS:-32}"
 ATTENTION_BACKEND="${ATTENTION_BACKEND:-fa3}"
-HIGH_BS_THRESHOLD="${HIGH_BS_THRESHOLD:-20}"
+# Threshold 24 was the best measured throughput-oriented policy on 2026-07-17.
+# Override it for a latency-oriented deployment or further threshold sweeps.
+HIGH_BS_THRESHOLD="${HIGH_BS_THRESHOLD:-24}"
 PRELOAD_LIBSTDCXX="${PRELOAD_LIBSTDCXX:-/usr/lib/x86_64-linux-gnu/libstdc++.so.6}"
 
 # The measured workload is kept identical to the command supplied by the user.

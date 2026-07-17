@@ -149,6 +149,27 @@ suffix static K=4 and FA3 ragged K=4/8 both achieved `0.945` accuracy
 K=8 committed-token efficiency, so this is an exercised K=8 correctness
 result rather than a K=4 fallback result.
 
+### Threshold tuning update (2026-07-17)
+
+The threshold controls whether the *active decode batch* can use K=8. Raising
+it from 20 to 24 allowed K=8 to remain active for the external-concurrency-20
+workload rather than only its tail. On the same repeated-data benchmark,
+`HIGH_BS_THRESHOLD=24` produced the following ragged-versus-static-K=4 output
+throughput deltas:
+
+| Concurrent requests | Ragged K=4/8 vs suffix static K=4 | K=8 request rounds | K=8 efficiency |
+| ---: | ---: | ---: | ---: |
+| 10 | +2.78% | 2,158 | 0.873 |
+| 20 | **+5.05%** | 4,919 | 0.888 |
+| 24 | +2.70% | 1,859 | 0.902 |
+
+The benchmark default in `scripts/run_dynamic_k_experiment.sh` is therefore
+24 for throughput-oriented testing. This is not a latency default: at
+concurrency 20, mean TTFT rose from 1,213.81 ms (static K=4) to 1,714.24 ms
+(ragged K=4/8), and mean ITL rose from 143.46 ms to 194.27 ms. Deploy with
+`--speculative-high-bs-threshold 24` only when aggregate throughput is the
+priority; retain 20 or lower when latency is more important.
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
