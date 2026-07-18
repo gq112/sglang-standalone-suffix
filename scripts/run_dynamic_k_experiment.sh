@@ -14,6 +14,10 @@
 #   GPU_IDS=0,1,2,3 TP_SIZE=4 PORT=30000 \
 #   DATASET_PATH=donghuayiwei_fixed.jsonl \
 #   bash scripts/run_dynamic_k_experiment.sh
+#
+# Minimal compact-varlen graph smoke test (only starts the actual K=4/8 server):
+#   SGLANG_RAGGED_VARLEN_CUDA_GRAPH_PATTERNS=10:5 \
+#   EXPERIMENTS=dynamic_k4_k8 bash scripts/run_dynamic_k_experiment.sh
 
 set -Eeuo pipefail
 
@@ -48,6 +52,9 @@ FIXED_OUTPUT_LEN="${FIXED_OUTPUT_LEN:-2048}"
 SHUFFLE="${SHUFFLE:-0}"
 SERVER_START_TIMEOUT="${SERVER_START_TIMEOUT:-900}"
 RESULTS_DIR="${RESULTS_DIR:-${SPEC_FORGE_DIR}/results/dynamic_k_$(date +%Y%m%d_%H%M%S)}"
+# A space-separated subset of: no_speculation, standalone_k4, suffix_static_k4,
+# dynamic_k4_k4, dynamic_k4_k8.  Keeping the default preserves the full A/B run.
+EXPERIMENTS="${EXPERIMENTS:-no_speculation standalone_k4 suffix_static_k4 dynamic_k4_k4 dynamic_k4_k8}"
 
 SERVER_PID=""
 
@@ -68,6 +75,17 @@ cleanup_server() {
 }
 
 trap cleanup_server EXIT INT TERM
+
+should_run_experiment() {
+    local experiment="$1"
+    local selected
+    for selected in ${EXPERIMENTS}; do
+        if [[ "${selected}" == "${experiment}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 wait_for_server() {
     local deadline=$((SECONDS + SERVER_START_TIMEOUT))
@@ -235,21 +253,28 @@ Primary comparisons:
   individual measurement_bs10, measurement_bs20, and measurement_bs24 results.
 EOF
 
-run_experiment "no_speculation"
-run_experiment "standalone_k4" \
+if should_run_experiment "no_speculation"; then
+    run_experiment "no_speculation"
+fi
+if should_run_experiment "standalone_k4"; then
+    run_experiment "standalone_k4" \
     --speculative-draft-model-path "${DRAFT_MODEL_PATH}" \
     --speculative-algorithm STANDALONE \
     --speculative-num-steps 3 \
     --speculative-num-draft-tokens 4 \
     --speculative-eagle-topk 1
-run_experiment "suffix_static_k4" \
+fi
+if should_run_experiment "suffix_static_k4"; then
+    run_experiment "suffix_static_k4" \
     --speculative-draft-model-path "${DRAFT_MODEL_PATH}" \
     --speculative-algorithm STANDALONE \
     --speculative-num-steps 3 \
     --speculative-num-draft-tokens 4 \
     --speculative-eagle-topk 1 \
     --speculative-suffix-enable
-run_experiment "dynamic_k4_k4" \
+fi
+if should_run_experiment "dynamic_k4_k4"; then
+    run_experiment "dynamic_k4_k4" \
     --speculative-draft-model-path "${DRAFT_MODEL_PATH}" \
     --speculative-algorithm STANDALONE \
     --speculative-num-steps 3 \
@@ -261,7 +286,9 @@ run_experiment "dynamic_k4_k4" \
     --speculative-long-suffix-draft-token-num 4 \
     --speculative-long-suffix-min-match-len 7 \
     --speculative-high-bs-threshold "${HIGH_BS_THRESHOLD}"
-run_experiment "dynamic_k4_k8" \
+fi
+if should_run_experiment "dynamic_k4_k8"; then
+    run_experiment "dynamic_k4_k8" \
     --speculative-draft-model-path "${DRAFT_MODEL_PATH}" \
     --speculative-algorithm STANDALONE \
     --speculative-num-steps 3 \
@@ -273,6 +300,7 @@ run_experiment "dynamic_k4_k8" \
     --speculative-long-suffix-draft-token-num 8 \
     --speculative-long-suffix-min-match-len 7 \
     --speculative-high-bs-threshold "${HIGH_BS_THRESHOLD}"
+fi
 
 python "${SGLANG_DIR}/scripts/summarize_dynamic_k_experiment.py" "${RESULTS_DIR}" \
     | tee "${RESULTS_DIR}/dynamic_k_metric_summary.tsv"
