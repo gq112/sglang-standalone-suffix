@@ -556,6 +556,8 @@ class CudaGraphRunner:
             and args.attention_backend == "fa3"
             and args.page_size == 1
             and args.speculative_eagle_topk == 1
+            and args.speculative_long_suffix_draft_token_num
+            > args.speculative_normal_draft_token_num
         ):
             logger.warning(
                 "Ignoring SGLANG_RAGGED_VARLEN_CUDA_GRAPH_PATTERNS: "
