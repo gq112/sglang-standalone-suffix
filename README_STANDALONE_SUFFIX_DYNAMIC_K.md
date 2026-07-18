@@ -228,6 +228,8 @@ are captured once at server startup and unmatched shapes safely use eager
 Ragged FA3. Patterns are opt-in because capturing all possible `(bs, k8_count)`
 combinations would consume excessive CUDA-graph memory. Start with a small set
 of hot shapes and inspect `ragged_verify_cuda_graph_batch_total` for hits.
+`ragged_verify_varlen_cuda_graph_batch_total` is the stricter proof that a
+compact true-varlen graph, rather than the retired K=8-padding graph, replayed.
 
 ### Scope and method
 

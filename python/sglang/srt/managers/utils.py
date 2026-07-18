@@ -40,6 +40,7 @@ class GenerationBatchResult:
     dynamic_k_normal_verify_call_count: int = 0
     dynamic_k_long_verify_call_count: int = 0
     ragged_verify_cuda_graph_batch_count: int = 0
+    ragged_verify_varlen_cuda_graph_batch_count: int = 0
     ragged_verify_eager_batch_count: int = 0
 
     # For output processing

@@ -18,6 +18,7 @@ METRICS = (
     "sglang:dynamic_k_mixed_verify_batch_total",
     "sglang:dynamic_k_normal_verify_call_total",
     "sglang:dynamic_k_long_verify_call_total",
+    "sglang:ragged_verify_varlen_cuda_graph_batch_total",
 )
 SNAPSHOTS = ("startup", "after_warmup", "after_k8_probe", "after_measurement")
 LABEL_RE = re.compile(r'tp_rank="([^"]+)"')
@@ -227,6 +228,7 @@ def main() -> None:
         "experiment\tphase\tproposals\toverrides\tk8_requests"
         "\tk8_output_tokens\tk8_draft_tokens\tk8_efficiency"
         "\tdynamic_batches\tmixed_batches\tk4_verify_calls\tlong_verify_calls"
+        "\tvarlen_graph_batches"
     )
     dynamic_probe: dict[str, float] | None = None
     for experiment_dir in sorted(path for path in args.results_dir.iterdir() if path.is_dir()):
@@ -275,7 +277,8 @@ def main() -> None:
                 f"{delta['sglang:dynamic_k_verify_batch_total']:.0f}\t"
                 f"{delta['sglang:dynamic_k_mixed_verify_batch_total']:.0f}\t"
                 f"{delta['sglang:dynamic_k_normal_verify_call_total']:.0f}\t"
-                f"{delta['sglang:dynamic_k_long_verify_call_total']:.0f}"
+                f"{delta['sglang:dynamic_k_long_verify_call_total']:.0f}\t"
+                f"{delta['sglang:ragged_verify_varlen_cuda_graph_batch_total']:.0f}"
             )
             if experiment_dir.name == "dynamic_k4_k8" and phase == "k8_probe":
                 dynamic_probe = delta

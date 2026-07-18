@@ -121,6 +121,7 @@ class EAGLEWorker(TpModelWorker):
         self._dynamic_k_normal_verify_call_count = 0
         self._dynamic_k_long_verify_call_count = 0
         self._ragged_verify_cuda_graph_batch_count = 0
+        self._ragged_verify_varlen_cuda_graph_batch_count = 0
         self._ragged_verify_eager_batch_count = 0
         self._ragged_cuda_graph_min_long_ratio = min(
             1.0,
@@ -330,6 +331,7 @@ class EAGLEWorker(TpModelWorker):
         self._dynamic_k_normal_verify_call_count = 0
         self._dynamic_k_long_verify_call_count = 0
         self._ragged_verify_cuda_graph_batch_count = 0
+        self._ragged_verify_varlen_cuda_graph_batch_count = 0
         self._ragged_verify_eager_batch_count = 0
         if self._suffix_proposer:
             self._suffix_prepare_batch(batch)
@@ -394,6 +396,9 @@ class EAGLEWorker(TpModelWorker):
                 dynamic_k_normal_verify_call_count=self._dynamic_k_normal_verify_call_count,
                 dynamic_k_long_verify_call_count=self._dynamic_k_long_verify_call_count,
                 ragged_verify_cuda_graph_batch_count=self._ragged_verify_cuda_graph_batch_count,
+                ragged_verify_varlen_cuda_graph_batch_count=(
+                    self._ragged_verify_varlen_cuda_graph_batch_count
+                ),
                 ragged_verify_eager_batch_count=self._ragged_verify_eager_batch_count,
             )
 
@@ -1476,6 +1481,8 @@ class EAGLEWorker(TpModelWorker):
             self._dynamic_k_long_verify_call_count += 1
             if can_run_cuda_graph:
                 self._ragged_verify_cuda_graph_batch_count += 1
+                if getattr(spec_info, "ragged_cuda_graph_varlen", False):
+                    self._ragged_verify_varlen_cuda_graph_batch_count += 1
             else:
                 self._ragged_verify_eager_batch_count += 1
             if self._long_suffix_draft_token_num > self._normal_draft_token_num:

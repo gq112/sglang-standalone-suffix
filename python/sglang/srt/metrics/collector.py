@@ -328,6 +328,14 @@ class SchedulerMetricsCollector:
             documentation="Ragged dynamic-K target verify batches replayed through CUDA Graph.",
             labelnames=labels.keys(),
         )
+        self.ragged_verify_varlen_cuda_graph_batch_total = Counter(
+            name="sglang:ragged_verify_varlen_cuda_graph_batch_total",
+            documentation=(
+                "Ragged dynamic-K target verify batches replayed by a compact "
+                "true-varlen CUDA Graph."
+            ),
+            labelnames=labels.keys(),
+        )
         self.ragged_verify_eager_batch_total = Counter(
             name="sglang:ragged_verify_eager_batch_total",
             documentation="Ragged dynamic-K target verify batches executed eagerly.",
@@ -649,6 +657,7 @@ class SchedulerMetricsCollector:
         dynamic_normal_verify_call_count: int,
         dynamic_long_verify_call_count: int,
         ragged_verify_cuda_graph_batch_count: int,
+        ragged_verify_varlen_cuda_graph_batch_count: int,
         ragged_verify_eager_batch_count: int,
     ) -> None:
         """Publish cumulative suffix/dynamic-K counters for one scheduler batch."""
@@ -674,6 +683,10 @@ class SchedulerMetricsCollector:
             (
                 self.ragged_verify_cuda_graph_batch_total,
                 ragged_verify_cuda_graph_batch_count,
+            ),
+            (
+                self.ragged_verify_varlen_cuda_graph_batch_total,
+                ragged_verify_varlen_cuda_graph_batch_count,
             ),
             (
                 self.ragged_verify_eager_batch_total,
