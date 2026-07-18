@@ -55,7 +55,7 @@ class StandaloneWorker(EAGLEWorker):
                 0.0,
                 float(
                     os.environ.get(
-                        "SGLANG_RAGGED_CUDA_GRAPH_MIN_LONG_RATIO", "0.75"
+                        "SGLANG_RAGGED_CUDA_GRAPH_MIN_LONG_RATIO", "1.0"
                     )
                 ),
             ),

@@ -128,7 +128,7 @@ class EAGLEWorker(TpModelWorker):
                 0.0,
                 float(
                     os.environ.get(
-                        "SGLANG_RAGGED_CUDA_GRAPH_MIN_LONG_RATIO", "0.75"
+                        "SGLANG_RAGGED_CUDA_GRAPH_MIN_LONG_RATIO", "1.0"
                     )
                 ),
             ),
@@ -1578,7 +1578,7 @@ class EAGLEWorker(TpModelWorker):
         if self._long_suffix_draft_token_num <= self._normal_draft_token_num:
             return
         long_count = spec_info.ragged_long_suffix_count
-        min_long_ratio = getattr(self, "_ragged_cuda_graph_min_long_ratio", 0.75)
+        min_long_ratio = getattr(self, "_ragged_cuda_graph_min_long_ratio", 1.0)
         if long_count / batch.batch_size() < min_long_ratio:
             return
         graph_runner = getattr(self.target_worker.model_runner, "graph_runner", None)

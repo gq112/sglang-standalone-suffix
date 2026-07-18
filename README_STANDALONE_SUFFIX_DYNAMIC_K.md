@@ -75,9 +75,10 @@ same CUDA graph, as long as the verify width and padded batch bucket match.
 Mixed ragged batches use eager FA3 by default. A bounded graph path reuses the
 existing K=8 graph when the K=8 row ratio is at least 75%; it pads only the
 unobserved causal suffix of K=4 rows and frees those cache slots after verify.
-Set `SGLANG_RAGGED_CUDA_GRAPH_MIN_LONG_RATIO` (default `0.75`) to tune this
-coverage/per-row-padding trade-off. The graph/eager coverage counters below
-are the rollout gate.
+Set `SGLANG_RAGGED_CUDA_GRAPH_MIN_LONG_RATIO` to tune this
+coverage/per-row-padding trade-off. The production-safe default is now `1.0`
+(pure eager Ragged); lower values are experimental padding-graph policies.
+The graph/eager coverage counters below are the rollout gate.
 
 ## Configuration
 
@@ -180,8 +181,8 @@ priority; retain 20 or lower when latency is more important.
 
 The padded K=8 graph path was first checked with `SGLANG_RAGGED_CUDA_GRAPH_MIN_LONG_RATIO=0` on 20 labeled GSM8K questions. Static K=4 and dynamic K=4/8 both achieved `0.600` accuracy, while the dynamic run recorded 86 ragged CUDA-graph batches and no eager ragged batches. This validates that graph replay preserves greedy answers in the exercised run.
 
-On the repeated-data throughput workload with the default ratio `0.75`, the
-latest run at `dynamic_k_20260717_173642` measured:
+On the repeated-data throughput workload with ratio `0.75`, the initial run
+at `dynamic_k_20260717_173642` measured:
 
 | Concurrent requests | Static K=4 tok/s | Ragged K=4/8 tok/s | Dynamic vs static | Graph hit rate |
 | ---: | ---: | ---: | ---: | ---: |
@@ -191,10 +192,22 @@ latest run at `dynamic_k_20260717_173642` measured:
 
 The graph rate is low because K=8 proposals are distributed across many mixed
 batches; few batches reach 75% K=8 rows. These are promising end-to-end
-results, but not an isolated graph-speedup claim. Use
-`scripts/run_ragged_cuda_graph_ratio_sweep.sh` to compare eager (`1.0`) with
-ratios `0.75`, `0.60`, and `0.50` under the same workload before changing the
-production default.
+results, but not an isolated graph-speedup claim.
+
+The completed ratio sweep `ragged_cuda_graph_ratio_20260717_192114` compared
+identical workloads across eager and graph policies:
+
+| Min K=8 ratio | Graph hit rate (10 / 20 / 24) | Ragged throughput at 10 / 20 / 24 (tok/s) |
+| ---: | ---: | ---: |
+| 1.00 (eager control) | 0.00% / 0.00% / 0.00% | **387.48 / 416.68 / 383.18** |
+| 0.75 | 11.44% / 20.34% / 13.70% | 382.59 / 409.16 / 371.02 |
+| 0.60 | 44.94% / 39.37% / 49.76% | 383.10 / 396.57 / 376.59 |
+| 0.50 | 68.27% / 56.95% / 74.91% | 381.75 / 398.35 / 371.00 |
+
+More graph coverage did not improve throughput: padding K=4 rows to K=8 costs
+more than the current graph replay saves. Therefore the default is `1.0`
+(pure eager Ragged) until a compact, true variable-K CUDA Graph is available.
+Use `scripts/run_ragged_cuda_graph_ratio_sweep.sh` for future A/B checks.
 
 ### Scope and method
 
