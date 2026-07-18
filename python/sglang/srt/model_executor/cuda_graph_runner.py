@@ -685,7 +685,11 @@ class CudaGraphRunner:
                 # Compact Ragged graphs have an exact total-Q shape:
                 # normal_k * bs + (long_k - normal_k) * k8_count. Capture
                 # only explicitly selected hot patterns to bound graph memory.
-                for bs, k8_count in reversed(self.ragged_varlen_patterns):
+                # Draft CUDA-graph runners reuse this capture method but do
+                # not own compact target-verify patterns.
+                for bs, k8_count in reversed(
+                    getattr(self, "ragged_varlen_patterns", ())
+                ):
                     long_k = self.model_runner.server_args.speculative_long_suffix_draft_token_num
                     normal_k = self.model_runner.server_args.speculative_normal_draft_token_num
                     num_tokens = normal_k * bs + (long_k - normal_k) * k8_count
