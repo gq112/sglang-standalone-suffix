@@ -81,6 +81,11 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
     ragged_padded_to_draft_flat: Optional[torch.Tensor] = None
     ragged_cuda_graph_padded: bool = False
     ragged_long_suffix_count: int = 0
+    # Exact-shape CUDA Graph for a compact K=4/K=8 query buffer. Unlike the
+    # padded graph path this keeps ``draft_token`` and ``cu_seqlens_q`` truly
+    # ragged, so no synthetic K=4 tail tokens are computed.
+    ragged_cuda_graph_varlen: bool = False
+    ragged_cuda_graph_pattern_key: Optional[Tuple[int, int]] = None
 
     def __post_init__(self):
         super().__init__(SpecInputType.EAGLE_VERIFY)

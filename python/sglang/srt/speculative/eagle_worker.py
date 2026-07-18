@@ -1578,10 +1578,22 @@ class EAGLEWorker(TpModelWorker):
         if self._long_suffix_draft_token_num <= self._normal_draft_token_num:
             return
         long_count = spec_info.ragged_long_suffix_count
+        graph_runner = getattr(self.target_worker.model_runner, "graph_runner", None)
+        # Prefer an exact compact graph pattern. It keeps the flattened
+        # variable-length Q tensor and real cu_seqlens_q; no K=4 tail is
+        # padded to K=8.
+        if graph_runner is not None and graph_runner.can_run_ragged_varlen_target_verify(
+            batch.batch_size(), long_count
+        ):
+            spec_info.ragged_cuda_graph_varlen = True
+            spec_info.ragged_cuda_graph_pattern_key = (
+                batch.batch_size(),
+                long_count,
+            )
+            return
         min_long_ratio = getattr(self, "_ragged_cuda_graph_min_long_ratio", 1.0)
         if long_count / batch.batch_size() < min_long_ratio:
             return
-        graph_runner = getattr(self.target_worker.model_runner, "graph_runner", None)
         if graph_runner is None or not graph_runner.can_run_ragged_target_verify(
             batch.batch_size(), spec_info.draft_token_num
         ):

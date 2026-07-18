@@ -327,6 +327,7 @@ class FlashAttentionBackend(AttentionBackend):
         # latter by (batch_size, draft_token_num).
         self.target_verify_cuda_graph_state = {}
         self.target_verify_cuda_graph_metadata = {}
+        self.target_verify_ragged_cuda_graph_metadata = {}
         self.draft_extend_cuda_graph_state = {}
         self.draft_extend_cuda_graph_metadata = {}
         self.req_to_token = model_runner.req_to_token_pool.req_to_token
@@ -1445,6 +1446,9 @@ class FlashAttentionBackend(AttentionBackend):
                     "cu_seqlens_k": torch.zeros(
                         max_bs + 1, dtype=torch.int32, device=self.device
                     ),
+                    "cu_seqlens_q": torch.zeros(
+                        max_bs + 1, dtype=torch.int32, device=self.device
+                    ),
                     "page_table": torch.zeros(
                         max_bs,
                         max_num_pages,
@@ -1659,6 +1663,23 @@ class FlashAttentionBackend(AttentionBackend):
                 target_verify_state = self.target_verify_cuda_graph_state[
                     draft_token_num
                 ]
+                if getattr(spec_info, "ragged_cuda_graph_varlen", False):
+                    key = spec_info.ragged_cuda_graph_pattern_key
+                    metadata.cache_seqlens_int32 = target_verify_state[
+                        "cache_seqlens"
+                    ][:bs]
+                    metadata.cache_seqlens_int32.copy_(
+                        seq_lens + spec_info.ragged_draft_token_nums
+                    )
+                    metadata.max_seq_len_q = draft_token_num
+                    metadata.max_seq_len_k = seq_lens.max().item() + draft_token_num
+                    metadata.cu_seqlens_q = target_verify_state["cu_seqlens_q"][: bs + 1]
+                    metadata.cu_seqlens_q.copy_(spec_info.ragged_cu_seqlens_q)
+                    metadata.cu_seqlens_k = target_verify_state["cu_seqlens_k"][: bs + 1]
+                    metadata.page_table = target_verify_state["page_table"][:bs, :]
+                    self.target_verify_ragged_cuda_graph_metadata[key] = metadata
+                    self.forward_metadata = metadata
+                    return
                 metadata.cache_seqlens_int32 = target_verify_state["cache_seqlens"][:bs]
                 metadata.cache_seqlens_int32.copy_((seq_lens + draft_token_num))
 
@@ -1880,6 +1901,30 @@ class FlashAttentionBackend(AttentionBackend):
         elif forward_mode.is_target_verify():
             if self.topk <= 1:
                 draft_token_num = self._get_target_verify_draft_token_num(spec_info)
+                if getattr(spec_info, "ragged_cuda_graph_varlen", False):
+                    key = spec_info.ragged_cuda_graph_pattern_key
+                    metadata = self.target_verify_ragged_cuda_graph_metadata[key]
+                    metadata.cache_seqlens_int32.copy_(
+                        seq_lens + spec_info.ragged_draft_token_nums
+                    )
+                    metadata.cu_seqlens_q.copy_(spec_info.ragged_cu_seqlens_q)
+                    metadata.max_seq_len_k = seq_lens_cpu.max().item() + draft_token_num
+                    metadata.cu_seqlens_k[1:].copy_(
+                        torch.cumsum(
+                            metadata.cache_seqlens_int32, dim=0, dtype=torch.int32
+                        )
+                    )
+                    max_seq_pages = (
+                        metadata.max_seq_len_k + self.page_size - 1
+                    ) // self.page_size
+                    page_indices = self.req_to_token[
+                        req_pool_indices[:, None],
+                        self.decode_cuda_graph_metadata["strided_indices"][:max_seq_pages],
+                    ]
+                    page_indices //= self.page_size
+                    metadata.page_table[:, :max_seq_pages].copy_(page_indices)
+                    self.forward_metadata = metadata
+                    return
                 metadata = self.target_verify_cuda_graph_metadata[(bs, draft_token_num)]
                 metadata.cache_seqlens_int32.copy_((seq_lens + draft_token_num))
 

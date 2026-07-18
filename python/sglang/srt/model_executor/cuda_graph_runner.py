@@ -258,6 +258,13 @@ class CudaGraphRunner:
         # Batch sizes to capture
         self.capture_bs, self.compile_bs = get_batch_sizes_to_capture(model_runner)
         log_info_on_rank0(logger, f"Capture cuda graph bs {self.capture_bs}")
+        self.ragged_varlen_patterns = self._parse_ragged_varlen_patterns()
+        if self.ragged_varlen_patterns:
+            log_info_on_rank0(
+                logger,
+                "Capture compact ragged CUDA graph patterns "
+                f"{self.ragged_varlen_patterns}",
+            )
         if KTRANSFORMERS_AVAILABLE:
             AMXMoEWrapper.set_capture_batch_sizes(self.capture_bs)
         self.capture_forward_mode = ForwardMode.DECODE
@@ -419,6 +426,22 @@ class CudaGraphRunner:
 
     def can_run(self, forward_batch: ForwardBatch):
         spec_info = getattr(forward_batch, "spec_info", None)
+        if getattr(spec_info, "ragged_cuda_graph_varlen", False):
+            normal_k = self.model_runner.server_args.speculative_normal_draft_token_num
+            long_k = self.model_runner.server_args.speculative_long_suffix_draft_token_num
+            key = (
+                "ragged_varlen",
+                forward_batch.batch_size,
+                spec_info.ragged_long_suffix_count,
+            )
+            return (
+                key in self.graphs
+                and forward_batch.input_ids.numel()
+                == normal_k * forward_batch.batch_size
+                + (long_k - normal_k) * spec_info.ragged_long_suffix_count
+                and not self.require_gathered_buffer
+                and not self.enable_two_batch_overlap
+            )
         # Mixed K=4/K=8 target verification normally has a dynamic total
         # query-token count. The bounded replay path explicitly pads it to
         # the captured K=8 shape; unpadded ragged batches remain eager.
@@ -516,6 +539,90 @@ class CudaGraphRunner:
             and (draft_token_num, self.capture_bs[-1]) in self.graphs
         )
 
+    def _parse_ragged_varlen_patterns(self) -> tuple[tuple[int, int], ...]:
+        """Parse exact compact graph shapes from ``bs:k8_count`` pairs.
+
+        Capturing every possible K=8 count would consume too much graph
+        memory. The opt-in list captures only observed hot shapes; all other
+        mixed batches retain the correct eager Ragged FA3 path.
+        """
+        raw = os.environ.get("SGLANG_RAGGED_VARLEN_CUDA_GRAPH_PATTERNS", "")
+        if not raw:
+            return ()
+        args = self.model_runner.server_args
+        if not (
+            args.speculative_dynamic_k_enable
+            and args.speculative_suffix_enable
+            and args.attention_backend == "fa3"
+            and args.page_size == 1
+            and args.speculative_eagle_topk == 1
+        ):
+            logger.warning(
+                "Ignoring SGLANG_RAGGED_VARLEN_CUDA_GRAPH_PATTERNS: "
+                "the current server configuration cannot run compact Ragged FA3."
+            )
+            return ()
+        patterns = set()
+        for item in raw.split(","):
+            try:
+                bs_str, k8_str = item.strip().split(":", 1)
+                bs, k8_count = int(bs_str), int(k8_str)
+            except ValueError as exc:
+                raise ValueError(
+                    "SGLANG_RAGGED_VARLEN_CUDA_GRAPH_PATTERNS must use "
+                    "comma-separated bs:k8_count pairs, e.g. 10:5,20:10"
+                ) from exc
+            if bs not in self.capture_bs:
+                raise ValueError(
+                    f"Ragged CUDA graph batch size {bs} is not a captured "
+                    f"cuda_graph_bs value: {self.capture_bs}"
+                )
+            if not 0 < k8_count < bs:
+                raise ValueError(
+                    f"Ragged CUDA graph pattern {bs}:{k8_count} must be mixed"
+                )
+            patterns.add((bs, k8_count))
+        return tuple(sorted(patterns))
+
+    def can_run_ragged_varlen_target_verify(
+        self, batch_size: int, k8_count: int
+    ) -> bool:
+        return ("ragged_varlen", batch_size, k8_count) in self.graphs
+
+    def _make_ragged_varlen_capture_spec_info(
+        self, bs: int, k8_count: int, normal_k: int, long_k: int
+    ):
+        from sglang.srt.speculative.eagle_info import EagleVerifyInput
+
+        widths = torch.full(
+            (bs,), normal_k, dtype=torch.int32, device=self.device
+        )
+        widths[:k8_count] = long_k
+        return EagleVerifyInput(
+            draft_token=None,
+            custom_mask=self.custom_mask,
+            positions=None,
+            retrive_index=None,
+            retrive_next_token=None,
+            retrive_next_sibling=None,
+            retrive_cum_len=None,
+            spec_steps=long_k - 1,
+            topk=1,
+            draft_token_num=long_k,
+            capture_hidden_mode=CaptureHiddenMode.FULL,
+            seq_lens_sum=None,
+            seq_lens_cpu=None,
+            ragged_draft_token_nums=widths,
+            ragged_cu_seqlens_q=torch.nn.functional.pad(
+                torch.cumsum(widths, dim=0, dtype=torch.int32), (1, 0)
+            ),
+            ragged_long_suffix_mask=torch.arange(bs, device=self.device)
+            < k8_count,
+            ragged_long_suffix_count=k8_count,
+            ragged_cuda_graph_varlen=True,
+            ragged_cuda_graph_pattern_key=(bs, k8_count),
+        )
+
     def capture(self) -> None:
         profile_context = empty_context()
         if self.enable_profile_cuda_graph:
@@ -575,6 +682,44 @@ class CudaGraphRunner:
                         # Save gemlite cache after each capture
                         save_gemlite_cache()
 
+                # Compact Ragged graphs have an exact total-Q shape:
+                # normal_k * bs + (long_k - normal_k) * k8_count. Capture
+                # only explicitly selected hot patterns to bound graph memory.
+                for bs, k8_count in reversed(self.ragged_varlen_patterns):
+                    long_k = self.model_runner.server_args.speculative_long_suffix_draft_token_num
+                    normal_k = self.model_runner.server_args.speculative_normal_draft_token_num
+                    num_tokens = normal_k * bs + (long_k - normal_k) * k8_count
+                    spec_info = self._make_ragged_varlen_capture_spec_info(
+                        bs, k8_count, normal_k, long_k
+                    )
+                    if get_tensor_model_parallel_rank() == 0:
+                        avail_mem = get_available_gpu_memory(
+                            self.model_runner.device,
+                            self.model_runner.gpu_id,
+                            empty_cache=False,
+                        )
+                        logger.info(
+                            "Capturing compact ragged CUDA graph "
+                            f"(bs={bs} k8_count={k8_count} num_tokens={num_tokens} "
+                            f"avail_mem={avail_mem:.2f} GB)"
+                        )
+                    with patch_model(
+                        self.model_runner.model,
+                        bs in self.compile_bs,
+                        num_tokens=num_tokens,
+                        tp_group=self.model_runner.tp_group,
+                    ) as forward:
+                        graph, output_buffers = self.capture_one_batch_size(
+                            bs,
+                            forward,
+                            num_tokens_override=num_tokens,
+                            spec_info_override=spec_info,
+                        )
+                        key = ("ragged_varlen", bs, k8_count)
+                        self.graphs[key] = graph
+                        self.output_buffers[key] = output_buffers
+                    save_gemlite_cache()
+
         if self.enable_profile_cuda_graph:
             torch.cuda.memory._dump_snapshot(f"cuda_graph_runner_memory_usage.pickle")
             torch.cuda.memory._record_memory_history(enabled=None)
@@ -608,13 +753,23 @@ class CudaGraphRunner:
     def _create_device_graph(self):
         return torch.cuda.CUDAGraph()
 
-    def capture_one_batch_size(self, bs: int, forward: Callable):
+    def capture_one_batch_size(
+        self,
+        bs: int,
+        forward: Callable,
+        num_tokens_override: Optional[int] = None,
+        spec_info_override=None,
+    ):
         graph = self._create_device_graph()
         stream = self.stream
         num_tokens_per_bs = getattr(
             self, "current_capture_num_tokens_per_bs", self.num_tokens_per_bs
         )
-        num_tokens = bs * num_tokens_per_bs
+        num_tokens = (
+            num_tokens_override
+            if num_tokens_override is not None
+            else bs * num_tokens_per_bs
+        )
 
         # Graph inputs
         input_ids = self.input_ids[:num_tokens]
@@ -672,7 +827,9 @@ class CudaGraphRunner:
         else:
             global_dp_buffer_len = None
 
-        spec_info = self.get_spec_info(num_tokens, num_tokens_per_bs)
+        spec_info = spec_info_override or self.get_spec_info(
+            num_tokens, num_tokens_per_bs
+        )
         if self.capture_hidden_mode != CaptureHiddenMode.FULL:
             self.capture_hidden_mode = (
                 spec_info.capture_hidden_mode if spec_info else CaptureHiddenMode.NULL
@@ -816,7 +973,13 @@ class CudaGraphRunner:
 
         raw_bs = forward_batch.batch_size
         num_tokens_per_bs = self._get_num_tokens_per_bs(forward_batch)
-        raw_num_token = raw_bs * num_tokens_per_bs
+        spec_info = forward_batch.spec_info
+        is_ragged_varlen = getattr(spec_info, "ragged_cuda_graph_varlen", False)
+        raw_num_token = (
+            forward_batch.input_ids.numel()
+            if is_ragged_varlen
+            else raw_bs * num_tokens_per_bs
+        )
 
         # FlashInfer's prefill wrapper cache needs the active speculative width
         # to select the matching CUDA-graph plan for dynamic-K verify.
@@ -826,7 +989,11 @@ class CudaGraphRunner:
             )
 
         # Pad
-        if self.require_mlp_tp_gather:
+        if is_ragged_varlen:
+            # Compact Ragged graphs are captured for exact batch sizes. This
+            # preserves the real query count and avoids synthetic sequences.
+            bs = raw_bs
+        elif self.require_mlp_tp_gather:
             max_num_tokens = max(forward_batch.global_num_tokens_cpu)
             max_batch_size = (
                 max_num_tokens / num_tokens_per_bs
@@ -905,6 +1072,15 @@ class CudaGraphRunner:
         self.raw_num_token = raw_num_token
         self.bs = bs
         self.replay_num_tokens_per_bs = num_tokens_per_bs
+        self.replay_graph_key = (
+            (
+                "ragged_varlen",
+                raw_bs,
+                spec_info.ragged_long_suffix_count,
+            )
+            if is_ragged_varlen
+            else (num_tokens_per_bs, bs)
+        )
 
     def replay(
         self,
@@ -922,7 +1098,11 @@ class CudaGraphRunner:
             self.positions[: self.raw_num_token].copy_(forward_batch.positions)
 
         # Replay
-        graph_key = (self.replay_num_tokens_per_bs, self.bs)
+        graph_key = getattr(
+            self,
+            "replay_graph_key",
+            (self.replay_num_tokens_per_bs, self.bs),
+        )
         self.graphs[graph_key].replay()
 
         output = self.output_buffers[graph_key]

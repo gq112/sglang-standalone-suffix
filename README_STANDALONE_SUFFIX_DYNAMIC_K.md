@@ -209,6 +209,26 @@ more than the current graph replay saves. Therefore the default is `1.0`
 (pure eager Ragged) until a compact, true variable-K CUDA Graph is available.
 Use `scripts/run_ragged_cuda_graph_ratio_sweep.sh` for future A/B checks.
 
+### Compact true variable-K CUDA Graph
+
+`SGLANG_RAGGED_VARLEN_CUDA_GRAPH_PATTERNS` enables opt-in compact FA3 graphs
+for exact observed mixed shapes. Its format is a comma-separated list of
+`batch_size:k8_request_count` pairs:
+
+```bash
+SGLANG_RAGGED_VARLEN_CUDA_GRAPH_PATTERNS="10:5,20:10,24:8" \
+GPU_IDS=0,1,2,3 TP_SIZE=4 \
+bash scripts/run_dynamic_k_experiment.sh
+```
+
+For a matched pattern, the graph input has exactly
+`4 * batch_size + 4 * k8_request_count` query tokens. FA3 receives the real
+`cu_seqlens_q`, such as `[0, 4, 12, 16]`; no K=4 row is padded to K=8. Graphs
+are captured once at server startup and unmatched shapes safely use eager
+Ragged FA3. Patterns are opt-in because capturing all possible `(bs, k8_count)`
+combinations would consume excessive CUDA-graph memory. Start with a small set
+of hot shapes and inspect `ragged_verify_cuda_graph_batch_total` for hits.
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
