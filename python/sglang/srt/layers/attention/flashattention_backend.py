@@ -1419,6 +1419,12 @@ class FlashAttentionBackend(AttentionBackend):
                     "cache_seqlens": torch.zeros(
                         max_bs, dtype=torch.int32, device=self.device
                     ),
+                    # Fixed-K target verify builds cu_seqlens_q on capture.
+                    # Compact ragged CUDA graphs need a stable buffer because
+                    # their per-row query widths are replayed dynamically.
+                    "cu_seqlens_q": torch.zeros(
+                        max_bs + 1, dtype=torch.int32, device=self.device
+                    ),
                     "cu_seqlens_k": torch.zeros(
                         max_bs + 1, dtype=torch.int32, device=self.device
                     ),
