@@ -41,6 +41,9 @@ ATTENTION_BACKEND="${ATTENTION_BACKEND:-fa3}"
 # Threshold 24 was the best measured throughput-oriented policy on 2026-07-17.
 # Override it for a latency-oriented deployment or further threshold sweeps.
 HIGH_BS_THRESHOLD="${HIGH_BS_THRESHOLD:-24}"
+DYNAMIC_LONG_DRAFT_TOKENS="${DYNAMIC_LONG_DRAFT_TOKENS:-8}"
+DYNAMIC_LONG_SUFFIX_MIN_MATCH_LEN="${DYNAMIC_LONG_SUFFIX_MIN_MATCH_LEN:-7}"
+DYNAMIC_EXPERIMENT_NAME="${DYNAMIC_EXPERIMENT_NAME:-dynamic_k4_k8}"
 PRELOAD_LIBSTDCXX="${PRELOAD_LIBSTDCXX:-/usr/lib/x86_64-linux-gnu/libstdc++.so.6}"
 
 # The measured workload is kept identical to the command supplied by the user.
@@ -290,8 +293,8 @@ if should_run_experiment "dynamic_k4_k4"; then
     --speculative-long-suffix-min-match-len 7 \
     --speculative-high-bs-threshold "${HIGH_BS_THRESHOLD}"
 fi
-if should_run_experiment "dynamic_k4_k8"; then
-    run_experiment "dynamic_k4_k8" \
+if should_run_experiment "${DYNAMIC_EXPERIMENT_NAME}"; then
+    run_experiment "${DYNAMIC_EXPERIMENT_NAME}" \
     --speculative-draft-model-path "${DRAFT_MODEL_PATH}" \
     --speculative-algorithm STANDALONE \
     --speculative-num-steps 3 \
@@ -300,8 +303,8 @@ if should_run_experiment "dynamic_k4_k8"; then
     --speculative-suffix-enable \
     --speculative-dynamic-k-enable \
     --speculative-normal-draft-token-num 4 \
-    --speculative-long-suffix-draft-token-num 8 \
-    --speculative-long-suffix-min-match-len 7 \
+    --speculative-long-suffix-draft-token-num "${DYNAMIC_LONG_DRAFT_TOKENS}" \
+    --speculative-long-suffix-min-match-len "${DYNAMIC_LONG_SUFFIX_MIN_MATCH_LEN}" \
     --speculative-high-bs-threshold "${HIGH_BS_THRESHOLD}"
 fi
 
