@@ -56,22 +56,33 @@ def main() -> None:
     rows: dict[int, dict[str, dict[str, float]]] = defaultdict(dict)
     for case_dir in sorted(path for path in root.iterdir() if path.is_dir()):
         label = case_dir.name
+        measurements = []
         for log_path in case_dir.rglob("measurement_bs*_n*.log"):
             row = parse_log(log_path)
             if row is None:
                 continue
-            before = read_metrics(
-                log_path.parent / "metrics_after_k8_probe_focus.prom"
+            measurements.append((int(row["bs"]), log_path, row))
+
+        # Metric snapshots are cumulative. Subtract the immediately preceding
+        # measurement snapshot so every row describes that concurrency phase,
+        # rather than bs10 + bs20 + ... since the K=8 probe.
+        previous_by_experiment: dict[Path, dict[str, float]] = {}
+        for bs, log_path, row in sorted(measurements):
+            experiment_dir = log_path.parent
+            before = previous_by_experiment.setdefault(
+                experiment_dir,
+                read_metrics(experiment_dir / "metrics_after_k8_probe_focus.prom"),
             )
             after = read_metrics(
-                log_path.parent / f"metrics_after_measurement_bs{int(row['bs'])}_focus.prom"
+                experiment_dir / f"metrics_after_measurement_bs{bs}_focus.prom"
             )
             draft = after[METRICS[2]] - before[METRICS[2]]
             row["long_rounds"] = after[METRICS[0]] - before[METRICS[0]]
             row["long_efficiency"] = (
                 (after[METRICS[1]] - before[METRICS[1]]) / draft if draft else 0.0
             )
-            rows[int(row["bs"])][label] = row
+            rows[bs][label] = row
+            previous_by_experiment[experiment_dir] = after
 
     labels = ["fixed_k4", "dynamic_k4_control"] + sorted(
         (path.name for path in root.glob("dynamic_k4_k*")),
