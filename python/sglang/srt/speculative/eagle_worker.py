@@ -153,6 +153,9 @@ class EAGLEWorker(TpModelWorker):
         self._high_bs_threshold = server_args.speculative_high_bs_threshold
         self._dynamic_k_tiers = self._parse_dynamic_k_tiers()
         self._dynamic_k_batch_policy = self._parse_dynamic_k_batch_policy()
+        self._dynamic_k_high_batch_fallback = (
+            self._parse_dynamic_k_high_batch_fallback()
+        )
 
         if server_args.speculative_suffix_enable:
             self._init_suffix_proposer(target_worker)
@@ -669,6 +672,31 @@ class EAGLEWorker(TpModelWorker):
             policy.append((max_batch, max_width))
         return sorted(policy)
 
+    def _parse_dynamic_k_high_batch_fallback(self) -> Optional[Tuple[int, int]]:
+        """Parse an opt-in high-batch ``K:min_match`` fallback tier.
+
+        For example, ``8:8`` keeps K=4/16 below the configured batch
+        threshold, but uses suffix K=8 (instead of disabling dynamic K
+        entirely) when the active decode batch reaches that threshold.
+        """
+        raw = os.environ.get("SGLANG_DYNAMIC_K_HIGH_BATCH_FALLBACK", "").strip()
+        if not raw:
+            return None
+        try:
+            width_text, match_text = raw.split(":", 1)
+            width, min_match = int(width_text), int(match_text)
+        except ValueError as exc:
+            raise ValueError(
+                "SGLANG_DYNAMIC_K_HIGH_BATCH_FALLBACK must be K:min_match, "
+                f"got {raw!r}"
+            ) from exc
+        if width <= self._normal_draft_token_num or min_match <= 0:
+            raise ValueError(
+                "High-batch fallback must be wider than normal K and have a "
+                f"positive match length, got {raw!r}"
+            )
+        return width, min_match
+
     def _max_dynamic_k_for_batch(self, batch_size: int) -> int:
         for max_batch, max_width in self._dynamic_k_batch_policy:
             if batch_size <= max_batch:
@@ -690,17 +718,20 @@ class EAGLEWorker(TpModelWorker):
             return {}
         bs = batch.batch_size()
         if bs >= self._high_bs_threshold:
-            return {}
-
-        max_width = self._max_dynamic_k_for_batch(bs)
+            if self._dynamic_k_high_batch_fallback is None:
+                return {}
+            eligible_tiers = [self._dynamic_k_high_batch_fallback]
+        else:
+            max_width = self._max_dynamic_k_for_batch(bs)
+            eligible_tiers = [
+                tier for tier in self._dynamic_k_tiers if tier[0] <= max_width
+            ]
         selected: Dict[int, int] = {}
         for idx, proposal in enumerate(proposals):
             if proposal is None:
                 continue
-            for width, min_match in reversed(self._dynamic_k_tiers):
+            for width, min_match in reversed(eligible_tiers):
                 required_tokens = width - 1
-                if width > max_width:
-                    continue
                 if proposal.match_len < min_match:
                     continue
                 if proposal.score < required_tokens:

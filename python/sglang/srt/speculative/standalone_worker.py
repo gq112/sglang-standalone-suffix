@@ -80,6 +80,9 @@ class StandaloneWorker(EAGLEWorker):
         # opt-in multi-tier dynamic-K configuration.
         self._dynamic_k_tiers = self._parse_dynamic_k_tiers()
         self._dynamic_k_batch_policy = self._parse_dynamic_k_batch_policy()
+        self._dynamic_k_high_batch_fallback = (
+            self._parse_dynamic_k_high_batch_fallback()
+        )
         if server_args.speculative_suffix_enable:
             self._init_suffix_proposer(target_worker)
 

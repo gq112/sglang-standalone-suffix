@@ -321,6 +321,20 @@ effective at concurrency 10--20, with its largest verified median benefit at
 target the 24-concurrency target-verify saturation rather than more K=8/K=16
 threshold tuning.
 
+### Experimental high-batch suffix K=8 fallback
+
+The deployed candidate above disables dynamic widening when `active_batch >=
+24`. The opt-in environment setting
+`SGLANG_DYNAMIC_K_HIGH_BATCH_FALLBACK=8:8` changes only that high-batch
+branch: suffix proposals with at least eight matched tokens use K=8 while all
+other rows remain K=4. Below 24, the configured K=4/16 policy is unchanged.
+This is deliberately separate from the rejected `K=4/8/16` batch-tail policy:
+K=8 is selected only when the active batch is high, never because it shrank.
+Use `scripts/run_dynamic_k_high_batch_fallback_sweep.sh` to compare fixed K=4,
+K=4/8, K=4/16, and this fallback at external concurrency 10/20/24/30. Verify
+the new branch from `dynamic_k_tier_request_total{draft_tokens="8"}` in the
+K=4/16-high-K=8 result.
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
