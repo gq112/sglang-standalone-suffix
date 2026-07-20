@@ -321,6 +321,7 @@ class SchedulerOutputProcessorMixin:
                     result.dynamic_k_mixed_verify_batch_count,
                     result.dynamic_k_normal_verify_call_count,
                     result.dynamic_k_long_verify_call_count,
+                    result.dynamic_k_tier_request_counts or {},
                     result.ragged_verify_cuda_graph_batch_count,
                     result.ragged_verify_varlen_cuda_graph_batch_count,
                     result.ragged_verify_eager_batch_count,

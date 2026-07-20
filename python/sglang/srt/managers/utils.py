@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import torch
 
@@ -39,6 +39,7 @@ class GenerationBatchResult:
     dynamic_k_mixed_verify_batch_count: int = 0
     dynamic_k_normal_verify_call_count: int = 0
     dynamic_k_long_verify_call_count: int = 0
+    dynamic_k_tier_request_counts: Optional[Dict[int, int]] = None
     ragged_verify_cuda_graph_batch_count: int = 0
     ragged_verify_varlen_cuda_graph_batch_count: int = 0
     ragged_verify_eager_batch_count: int = 0

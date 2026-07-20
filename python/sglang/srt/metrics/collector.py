@@ -323,6 +323,11 @@ class SchedulerMetricsCollector:
             documentation="Long-suffix target verify calls issued by dynamic K batches.",
             labelnames=labels.keys(),
         )
+        self.dynamic_k_tier_request_total = Counter(
+            name="sglang:dynamic_k_tier_request_total",
+            documentation="Requests verified by each selected dynamic-K tier.",
+            labelnames=(*labels.keys(), "draft_tokens"),
+        )
         self.ragged_verify_cuda_graph_batch_total = Counter(
             name="sglang:ragged_verify_cuda_graph_batch_total",
             documentation="Ragged dynamic-K target verify batches replayed through CUDA Graph.",
@@ -656,6 +661,7 @@ class SchedulerMetricsCollector:
         dynamic_mixed_verify_batch_count: int,
         dynamic_normal_verify_call_count: int,
         dynamic_long_verify_call_count: int,
+        dynamic_k_tier_request_counts: dict[int, int],
         ragged_verify_cuda_graph_batch_count: int,
         ragged_verify_varlen_cuda_graph_batch_count: int,
         ragged_verify_eager_batch_count: int,
@@ -696,6 +702,11 @@ class SchedulerMetricsCollector:
         for metric, value in metric_values:
             if value:
                 metric.labels(**self.labels).inc(value)
+        for width, value in dynamic_k_tier_request_counts.items():
+            if value:
+                self.dynamic_k_tier_request_total.labels(
+                    **self.labels, draft_tokens=str(width)
+                ).inc(value)
 
     def log_stats(self, stats: SchedulerStats) -> None:
         self._log_gauge(self.num_running_reqs, stats.num_running_reqs)

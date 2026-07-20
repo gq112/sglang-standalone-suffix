@@ -81,6 +81,10 @@ class EagleVerifyInput(SpecInput, EagleVerifyInputV2Mixin):
     ragged_padded_to_draft_flat: Optional[torch.Tensor] = None
     ragged_cuda_graph_padded: bool = False
     ragged_long_suffix_count: int = 0
+    # Compact CUDA graphs currently capture one normal width and one long
+    # width. A K=4/8/16 batch remains correct in eager FA3, but must not use
+    # a binary-width graph pattern.
+    ragged_cuda_graph_eligible: bool = True
     # Exact-shape CUDA Graph for a compact K=4/K=8 query buffer. Unlike the
     # padded graph path this keeps ``draft_token`` and ``cu_seqlens_q`` truly
     # ragged, so no synthetic K=4 tail tokens are computed.
