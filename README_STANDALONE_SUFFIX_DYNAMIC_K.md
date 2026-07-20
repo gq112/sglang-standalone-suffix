@@ -286,6 +286,23 @@ K=16 minimum suffix-match lengths 15, 19, and 23 at concurrency 20 and 24.
 This isolates whether stricter, higher-confidence K=16 candidates improve the
 remaining high-concurrency bottleneck before attempting K=20 or K=24.
 
+**K=16 match-threshold result (2026-07-20).** The completed sweep at
+`dynamic_k16_match_20260720_120742` produced:
+
+| Concurrency | K=4/16, match ≥15 | match ≥19 | match ≥23 |
+| ---: | ---: | ---: | ---: |
+| 20 | +4.90% | **+7.13%** | +5.86% |
+| 24 | -1.88% | -2.04% | **+0.42%** |
+
+`match ≥19` is the best observed candidate at concurrency 20, while
+`match ≥23` is the only candidate that did not regress at concurrency 24.
+The 24-concurrency +0.42% delta is within normal benchmark noise, and the
+fixed-K=4 concurrency-20 baseline varied from 354.57 to 378.35 tok/s across
+otherwise comparable sweeps. Therefore these are selection candidates, not a
+final deployment claim. The required final validation is an alternating,
+multi-repeat A/B test of fixed K=4 versus the chosen K=4/16 policy, reporting
+per-concurrency median throughput and latency rather than one-run deltas.
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
