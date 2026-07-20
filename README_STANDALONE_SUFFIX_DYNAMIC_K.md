@@ -372,6 +372,27 @@ for three fresh-server repeats by default, across concurrency 10/20/24/30.
 `final_ab_summary.md` reports median throughput, TTFT, TPOT, and per-phase
 TP0 K=8/K=16 tier coverage.
 
+**Final alternating A/B result (2026-07-20).** Three fresh-server,
+alternating runs completed at `final_dynamic_k_ab_20260720_213528`. This is
+the final throughput validation of the deployable policy, using the same FA3,
+TP=4, 2,048-output-token workload and external concurrency 10/20/24/30.
+
+| Concurrency | Fixed K=4 median tok/s | Final policy median tok/s | Throughput uplift | Fixed / dynamic TTFT | Fixed / dynamic TPOT |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | 361.20 | 383.49 | **+6.17%** | 2159.36 / 2203.80 ms | 23.85 / 22.27 ms |
+| 20 | 376.85 | 435.99 | **+15.69%** | 1987.16 / 1948.10 ms | 52.61 / 47.99 ms |
+| 24 | 376.47 | 403.37 | **+7.15%** | 3337.84 / 3680.91 ms | 65.39 / 62.10 ms |
+| 30 | 376.57 | 408.81 | **+8.56%** | 6807.07 / 7579.06 ms | 77.27 / 72.82 ms |
+
+Tier counters prove the policy routed exactly as intended in every repeat:
+K=8 was zero at concurrency 10/20 and 4,485--4,633 / 6,976--7,454 selected
+rows at 24 / 30; K=16 was then dominant at 10/20 and remained only for
+high-batch tails below active batch 24. The final policy is therefore the
+throughput deployment default. It improves TPOT at every tested concurrency,
+but it increases TTFT at 10, 24, and 30 (especially under saturation), so a
+strict TTFT SLO should use the fixed-K=4 baseline or apply admission control
+rather than treating this as a latency-only optimization.
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
