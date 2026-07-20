@@ -303,6 +303,24 @@ final deployment claim. The required final validation is an alternating,
 multi-repeat A/B test of fixed K=4 versus the chosen K=4/16 policy, reporting
 per-concurrency median throughput and latency rather than one-run deltas.
 
+**Final deployable-policy A/B (2026-07-20).** Three alternating fixed-K=4 /
+dynamic-K=4/16 runs with `long_suffix_min_match_len=23` completed at
+`final_k16_m23_ab_20260720_151011`. The reported values are medians of the
+three independently started server runs:
+
+| External concurrency | Fixed K=4 median | Dynamic K=4/16 median | Effective uplift |
+| ---: | ---: | ---: | ---: |
+| 10 | 353.19 tok/s | 375.37 tok/s | **+6.28%** |
+| 20 | 373.76 tok/s | 429.38 tok/s | **+14.88%** |
+| 24 | 371.79 tok/s | 377.05 tok/s | **+1.41%** |
+
+This is the current final result for one safe global policy: dynamic-K is
+effective at concurrency 10--20, with its largest verified median benefit at
+20, but it does not deliver a material gain at 24. It does not support a
+50--100% claim against fixed three-step K=4 speculation. Further work must
+target the 24-concurrency target-verify saturation rather than more K=8/K=16
+threshold tuning.
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
