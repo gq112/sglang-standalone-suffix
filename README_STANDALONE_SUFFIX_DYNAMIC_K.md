@@ -346,6 +346,12 @@ that branch from the authoritative
 `dynamic_k_tier_request_total{draft_tokens="8"}` metric; the legacy
 `dynamic_k8_request_total` / terminal `k8_requests` column counts all
 long-K rounds, including K=16, and must not be used as K=8-only evidence.
+The post-run TP0 snapshots confirmed that evidence: after external
+concurrency 24 the cumulative tier counters were K=16: 8,174 and K=8: 4,590;
+after concurrency 30 they were K=16: 8,295 and K=8: 12,042. These are
+per-draft-round selected rows (not unique client requests). Thus the 30 phase
+alone added 121 K=16 selections and 7,452 K=8 selections, exactly the
+intended high-batch behavior.
 
 | External concurrency | Fixed K=4 | K=4/8 | K=4/16 then K=4 | K=4/16 then high-batch K=8 |
 | ---: | ---: | ---: | ---: | ---: |
