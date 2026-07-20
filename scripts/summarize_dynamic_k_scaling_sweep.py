@@ -84,9 +84,13 @@ def main() -> None:
             rows[bs][label] = row
             previous_by_experiment[experiment_dir] = after
 
+    def dynamic_k_sort_key(value: str) -> tuple[int, str]:
+        match = re.search(r"_k(\d+)", value)
+        return (int(match.group(1)) if match else 0, value)
+
     labels = ["fixed_k4", "dynamic_k4_control"] + sorted(
         (path.name for path in root.glob("dynamic_k4_k*")),
-        key=lambda value: int(value.rsplit("k", 1)[1]),
+        key=dynamic_k_sort_key,
     )
     lines = [
         "# Dynamic-K Scaling Sweep",

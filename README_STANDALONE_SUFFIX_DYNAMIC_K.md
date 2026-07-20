@@ -231,6 +231,61 @@ of hot shapes and inspect `ragged_verify_cuda_graph_batch_total` for hits.
 `ragged_verify_varlen_cuda_graph_batch_total` is the stricter proof that a
 compact true-varlen graph, rather than the retired K=8-padding graph, replayed.
 
+### Recorded validation results (2026-07-19 to 2026-07-20)
+
+All measurements below use Qwen2.5-72B-Instruct-AWQ, Qwen3-0.6B draft, TP=4,
+FA3, greedy decoding, and the repeated SpecForge workload. Result directories
+are retained under `/workspace/SpecForge/results/`.
+
+**Compact true-varlen CUDA Graph.** In
+`varlen_eager_20260719_222455` versus
+`varlen_graph_20260719_223510`, both with `max_running_requests=16` and
+`mem_fraction_static=0.68`, concurrency-10 output throughput improved from
+`390.60` to `405.82 tok/s` (**+3.90%**). The compact `10:5` graph replayed
+121 times out of 692 ragged verify batches (17.5% coverage). A GSM8K run at
+`varlen_gsm8k_20260719_220654` recorded two compact graph replays and achieved
+0.930 accuracy versus 0.910 for suffix-static K=4; this is a correctness
+smoke test, not a quality-improvement claim.
+
+**Binary dynamic-K scaling.** The eager-only sweep in
+`dynamic_k_scaling_20260719_232837` established the following output-throughput
+deltas against suffix-static K=4:
+
+| Concurrency | K=4/8 | K=4/12 | K=4/16 | Best |
+| ---: | ---: | ---: | ---: | --- |
+| 10 | +7.65% | +7.06% | +6.97% | K=4/8 |
+| 20 | +10.57% | +16.39% | **+17.37%** | K=4/16 |
+| 24 | +0.69% | -0.64% | **+3.64%** | K=4/16 |
+
+K=16 reduced long-K committed-token efficiency to roughly 0.82--0.86, but
+still won at concurrency 20 because its target verify batching was more
+efficient. The current default candidate for deployment is therefore binary
+K=4/16 with `long_suffix_min_match_len=15`; it must still be validated with
+the match-threshold sweep below.
+
+**Adaptive K=4/8/16 policy.** The first policy used
+`SGLANG_DYNAMIC_K_TIERS="8:7,16:15"` and
+`SGLANG_DYNAMIC_K_BATCH_POLICY="12:8,22:16,24:16"`. In
+`dynamic_k_multitier_20260720_104930` it underperformed binary K=4/16:
+
+| Concurrency | Binary K=4/16 | Adaptive K=4/8/16 |
+| ---: | ---: | ---: |
+| 10 | +7.21% | +5.18% |
+| 20 | +16.08% | +13.85% |
+| 24 | +4.61% | +1.40% |
+
+The final TP0 metric snapshot contained 17,308 K=8 requests and only 2,693
+K=16 requests. Active decode batches often shrink below 12 during request
+tails even under external concurrency 20/24, so the batch-size rule selected
+K=8 for 86.5% of long requests. Do not use that adaptive policy as a default.
+`dynamic_k_tier_request_total{draft_tokens="..."}` is the authoritative
+metric for future tier-selection validation.
+
+**Next validation.** Run `scripts/run_dynamic_k16_match_sweep.sh` to compare
+K=16 minimum suffix-match lengths 15, 19, and 23 at concurrency 20 and 24.
+This isolates whether stricter, higher-confidence K=16 candidates improve the
+remaining high-concurrency bottleneck before attempting K=20 or K=24.
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
