@@ -366,6 +366,12 @@ K=4/16 + high-batch K=8 fallback is best at 24 and 30.  This run is one pass,
 not an alternating multi-repeat median, so its exact percentages still need
 repeat validation before replacing the deployment default.
 
+Run `scripts/run_final_dynamic_k_policy_ab.sh` for that final validation. It
+alternates fixed suffix K=4 and the deployable K=4/16 + high-batch K=8 policy
+for three fresh-server repeats by default, across concurrency 10/20/24/30.
+`final_ab_summary.md` reports median throughput, TTFT, TPOT, and per-phase
+TP0 K=8/K=16 tier coverage.
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
