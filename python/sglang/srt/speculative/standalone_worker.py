@@ -76,6 +76,10 @@ class StandaloneWorker(EAGLEWorker):
             server_args.speculative_long_suffix_min_match_len
         )
         self._high_bs_threshold = server_args.speculative_high_bs_threshold
+        # Standalone bypasses EAGLEWorker.__init__, so it must also own the
+        # opt-in multi-tier dynamic-K configuration.
+        self._dynamic_k_tiers = self._parse_dynamic_k_tiers()
+        self._dynamic_k_batch_policy = self._parse_dynamic_k_batch_policy()
         if server_args.speculative_suffix_enable:
             self._init_suffix_proposer(target_worker)
 
