@@ -393,6 +393,15 @@ but it increases TTFT at 10, 24, and 30 (especially under saturation), so a
 strict TTFT SLO should use the fixed-K=4 baseline or apply admission control
 rather than treating this as a latency-only optimization.
 
+Raw-run stability checks were also completed: every one of the 12
+per-concurrency A/B pairs returned all requests successfully and had positive
+dynamic-policy throughput deltas. The observed three-run uplift ranges were
++4.96--+8.72% (10), +15.17--+17.99% (20), +3.29--+10.13% (24), and
++6.63--+11.80% (30). The primary latency caveat is concurrency 24: median
+P95 TTFT increased from 11,933.04 ms to 13,036.64 ms (+1.10 s, about 9.2%).
+At concurrency 30 the corresponding P95 median changed from 17,945.90 ms to
+18,422.58 ms (+0.48 s, about 2.7%).
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
