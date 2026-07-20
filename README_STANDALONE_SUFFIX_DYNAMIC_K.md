@@ -335,6 +335,27 @@ K=4/8, K=4/16, and this fallback at external concurrency 10/20/24/30. Verify
 the new branch from `dynamic_k_tier_request_total{draft_tokens="8"}` in the
 K=4/16-high-K=8 result.
 
+**High-batch fallback result (2026-07-20).** The single-pass four-policy
+comparison at `high_batch_k8_20260720_182723` used external concurrency
+10/20/24/30 and the same FA3, TP=4, `max_running_requests=32` workload.  The
+candidate used K=16 only below active batch 24 when `suffix_match >= 23`; at
+or above active batch 24, rows with `suffix_match >= 8` used K=8 and every
+other row used K=4.  It was a real high-batch fallback: at external 24 and 30
+the K=8 counter increased by 5,499 and 7,573 rounds respectively.
+
+| External concurrency | Fixed K=4 | K=4/8 | K=4/16 then K=4 | K=4/16 then high-batch K=8 |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 360.45 tok/s | +5.81% | +3.71% | **+6.13%** |
+| 20 | 384.72 tok/s | +8.98% | **+11.38%** | +8.73% |
+| 24 | 375.43 tok/s | +4.33% | +1.03% | **+6.97%** |
+| 30 | 377.27 tok/s | +7.86% | +2.17% | **+8.97%** |
+
+Thus the policy choice should depend on intended operating concurrency:
+K=4/16 with match 23 remains the best observed policy at 20, whereas the
+K=4/16 + high-batch K=8 fallback is best at 24 and 30.  This run is one pass,
+not an alternating multi-repeat median, so its exact percentages still need
+repeat validation before replacing the deployment default.
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
