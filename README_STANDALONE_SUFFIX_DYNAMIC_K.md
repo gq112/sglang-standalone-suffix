@@ -341,7 +341,11 @@ comparison at `high_batch_k8_20260720_182723` used external concurrency
 candidate used K=16 only below active batch 24 when `suffix_match >= 23`; at
 or above active batch 24, rows with `suffix_match >= 8` used K=8 and every
 other row used K=4.  It was a real high-batch fallback: at external 24 and 30
-the K=8 counter increased by 5,499 and 7,573 rounds respectively.
+the policy can select K=8 only for an active batch of at least 24. Confirm
+that branch from the authoritative
+`dynamic_k_tier_request_total{draft_tokens="8"}` metric; the legacy
+`dynamic_k8_request_total` / terminal `k8_requests` column counts all
+long-K rounds, including K=16, and must not be used as K=8-only evidence.
 
 | External concurrency | Fixed K=4 | K=4/8 | K=4/16 then K=4 | K=4/16 then high-batch K=8 |
 | ---: | ---: | ---: | ---: | ---: |
