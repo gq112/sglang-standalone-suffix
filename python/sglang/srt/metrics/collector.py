@@ -283,6 +283,11 @@ class SchedulerMetricsCollector:
             documentation="The number of suffix cache proposals returned by the suffix proposer.",
             labelnames=labels.keys(),
         )
+        self.suffix_proposal_source_total = Counter(
+            name="sglang:suffix_proposal_source_total",
+            documentation="Suffix proposals selected from each suffix-cache tree.",
+            labelnames=[*labels.keys(), "source"],
+        )
         self.suffix_override_total = Counter(
             name="sglang:suffix_override_total",
             documentation="The number of requests whose normal K=4 draft was overridden by suffix tokens.",
@@ -653,6 +658,7 @@ class SchedulerMetricsCollector:
     def observe_suffix_stats(
         self,
         proposal_count: int,
+        proposal_source_counts: dict[str, int],
         override_count: int,
         long_request_count: int,
         long_output_token_count: int,
@@ -699,6 +705,11 @@ class SchedulerMetricsCollector:
                 ragged_verify_eager_batch_count,
             ),
         )
+        for source, count in proposal_source_counts.items():
+            if count:
+                self.suffix_proposal_source_total.labels(
+                    **self.labels, source=source
+                ).inc(count)
         for metric, value in metric_values:
             if value:
                 metric.labels(**self.labels).inc(value)

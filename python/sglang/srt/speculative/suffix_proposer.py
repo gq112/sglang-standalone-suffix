@@ -27,6 +27,7 @@ class SuffixProposal:
     token_ids: List[int]
     score: float
     match_len: int
+    source: str = "arctic"
 
     @classmethod
     def from_draft(cls, draft: SuffixDecodingDraft) -> "SuffixProposal":  # type: ignore[valid-type]
@@ -34,6 +35,7 @@ class SuffixProposal:
             token_ids=list(draft.token_ids),
             score=float(draft.score),
             match_len=int(draft.match_len),
+            source=str(getattr(draft, "source", "arctic")),
         )
 
 
@@ -46,7 +48,10 @@ class SuffixDecodingProposer:
         *,
         max_model_len: int,
     ):
-        if SuffixDecodingCache is None:
+        if (
+            server_args.speculative_suffix_backend == "arctic"
+            and SuffixDecodingCache is None
+        ):
             raise RuntimeError(
                 "Suffix decoding requires `arctic_inference` (pip install arctic-inference)."
             )
@@ -62,10 +67,21 @@ class SuffixDecodingProposer:
         self._max_spec_tokens_override = (
             server_args.speculative_suffix_max_spec_tokens
         )
-        self._cache = SuffixDecodingCache(
-            max_tree_depth=self._max_tree_depth,
-            max_cached_requests=self._max_cached_requests,
-        )
+        if server_args.speculative_suffix_backend == "sri_forest":
+            from sglang.srt.speculative.sri_forest_cache import SRIForestDecodingCache
+
+            self._cache = SRIForestDecodingCache(
+                max_tree_depth=self._max_tree_depth,
+                global_cache_max_requests=self._max_cached_requests,
+                dataset_cache_max_requests=(
+                    server_args.speculative_suffix_dataset_cache_max_requests
+                ),
+            )
+        else:
+            self._cache = SuffixDecodingCache(
+                max_tree_depth=self._max_tree_depth,
+                max_cached_requests=self._max_cached_requests,
+            )
 
     # ------------------------------------------------------------------ #
     # Cache lifecycle helpers

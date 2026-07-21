@@ -49,6 +49,9 @@ class StandaloneWorker(EAGLEWorker):
         # dynamic-K state explicitly instead of relying on EAGLEWorker.__init__.
         self._suffix_proposer = None
         self._last_suffix_status = None
+        self._suffix_proposal_count = 0
+        self._suffix_source_proposal_counts = {}
+        self._suffix_override_count = 0
         self._ragged_cuda_graph_min_long_ratio = min(
             1.0,
             max(

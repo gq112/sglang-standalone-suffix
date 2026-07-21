@@ -31,6 +31,7 @@ class GenerationBatchResult:
     # Suffix/dynamic-K observability. These are per scheduler batch and are
     # consumed by the TP0 scheduler metrics collector.
     suffix_proposal_count: int = 0
+    suffix_source_proposal_counts: Optional[Dict[str, int]] = None
     suffix_override_count: int = 0
     suffix_long_request_count: int = 0
     suffix_long_output_token_count: int = 0

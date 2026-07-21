@@ -112,6 +112,7 @@ class EAGLEWorker(TpModelWorker):
         self._suffix_proposer: Optional[SuffixDecodingProposer] = None
         self._last_suffix_status: Optional[str] = None
         self._suffix_proposal_count = 0
+        self._suffix_source_proposal_counts: Dict[str, int] = {}
         self._suffix_override_count = 0
         self._suffix_long_request_count = 0
         self._suffix_long_output_token_count = 0
@@ -328,6 +329,7 @@ class EAGLEWorker(TpModelWorker):
         # reset per-batch suffix status
         self._last_suffix_status = None
         self._suffix_proposal_count = 0
+        self._suffix_source_proposal_counts = {}
         self._suffix_override_count = 0
         self._suffix_long_request_count = 0
         self._suffix_long_output_token_count = 0
@@ -394,6 +396,7 @@ class EAGLEWorker(TpModelWorker):
                 can_run_cuda_graph=can_run_cuda_graph,
                 suffix_status=self._last_suffix_status,
                 suffix_proposal_count=self._suffix_proposal_count,
+                suffix_source_proposal_counts=dict(self._suffix_source_proposal_counts),
                 suffix_override_count=self._suffix_override_count,
                 suffix_long_request_count=self._suffix_long_request_count,
                 suffix_long_output_token_count=self._suffix_long_output_token_count,
@@ -611,6 +614,13 @@ class EAGLEWorker(TpModelWorker):
             self._suffix_proposal_count = sum(
                 proposal is not None for proposal in proposals
             )
+            self._suffix_source_proposal_counts = {}
+            for proposal in proposals:
+                if proposal is not None and proposal.score > 0:
+                    source = proposal.source
+                    self._suffix_source_proposal_counts[source] = (
+                        self._suffix_source_proposal_counts.get(source, 0) + 1
+                    )
             return proposals
         except Exception as exc:
             logger.warning("Suffix proposer failed: %s", exc)

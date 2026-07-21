@@ -379,6 +379,32 @@ with static K=4, and the final dynamic K=4/16/8 policy. Its
 `full_stack_summary.md` separates fixed-speculation, suffix-fusion,
 dynamic-K, and total gains.
 
+### Optional SRI forest suffix backend
+
+The default `arctic` suffix backend remains unchanged. For an experiment with
+an SRI-style C++ suffix-path store and a second stable dataset tree, build the
+optional extension manually in the serving environment:
+
+```bash
+cd /workspace/sglang-standalone-suffix
+bash scripts/build_sri_suffix_tree.sh
+PYTHONPATH=/workspace/sglang-standalone-suffix/python \
+  pytest -q test/srt/test_sri_forest_cache.py
+```
+
+Then add `--speculative-suffix-backend sri_forest` and, for example,
+`--speculative-suffix-dataset-cache-max-requests 256` to the existing
+Standalone+suffix launch command. `0` disables the added dataset tree. The
+SRI backend keeps the existing dynamic K=4/16/8 and FA3 ragged verifier, and
+only changes suffix proposal/cache selection. Metrics expose
+`sglang:suffix_proposal_source_total{source="local|global|dataset"}`; compare
+dataset `0` versus a positive capacity to measure the extra tree's coverage.
+The one-command A/B harness is
+`scripts/run_sri_forest_dataset_tree_experiment.sh`; it compares the existing
+Arctic cache, SRI global-only forest, and SRI forest plus dataset tree under
+the final dynamic K=4/16/8 policy, then writes
+`sri_dataset_tree_summary.md`.
+
 **Sequential continuous-cache A/B result (2026-07-20).** Three fresh-server,
 alternating policy runs completed at `final_dynamic_k_ab_20260720_213528`.
 Within each server, however, measurement order was 10 -> 20 -> 24 -> 30, so

@@ -44,6 +44,8 @@ HIGH_BS_THRESHOLD="${HIGH_BS_THRESHOLD:-24}"
 DYNAMIC_LONG_DRAFT_TOKENS="${DYNAMIC_LONG_DRAFT_TOKENS:-8}"
 DYNAMIC_LONG_SUFFIX_MIN_MATCH_LEN="${DYNAMIC_LONG_SUFFIX_MIN_MATCH_LEN:-7}"
 DYNAMIC_EXPERIMENT_NAME="${DYNAMIC_EXPERIMENT_NAME:-dynamic_k4_k8}"
+SUFFIX_BACKEND="${SUFFIX_BACKEND:-arctic}"
+SUFFIX_DATASET_CACHE_MAX_REQUESTS="${SUFFIX_DATASET_CACHE_MAX_REQUESTS:-0}"
 PRELOAD_LIBSTDCXX="${PRELOAD_LIBSTDCXX:-/usr/lib/x86_64-linux-gnu/libstdc++.so.6}"
 
 # The measured workload is kept identical to the command supplied by the user.
@@ -230,6 +232,8 @@ per-concurrency measurement logs, Prometheus snapshots, and isolated CSV
 artifacts under *_artifacts/.
 
 Dynamic-K policy: HIGH_BS_THRESHOLD=${HIGH_BS_THRESHOLD}
+Suffix backend: ${SUFFIX_BACKEND}
+Suffix dataset-tree capacity: ${SUFFIX_DATASET_CACHE_MAX_REQUESTS}
 
 Interpret the counters in metrics_after_k8_probe_focus.prom (filter tp_rank="0"):
   sglang:dynamic_k8_request_total
@@ -277,7 +281,9 @@ if should_run_experiment "suffix_static_k4"; then
     --speculative-num-steps 3 \
     --speculative-num-draft-tokens 4 \
     --speculative-eagle-topk 1 \
-    --speculative-suffix-enable
+    --speculative-suffix-enable \
+    --speculative-suffix-backend "${SUFFIX_BACKEND}" \
+    --speculative-suffix-dataset-cache-max-requests "${SUFFIX_DATASET_CACHE_MAX_REQUESTS}"
 fi
 if should_run_experiment "dynamic_k4_k4"; then
     run_experiment "dynamic_k4_k4" \
@@ -287,6 +293,8 @@ if should_run_experiment "dynamic_k4_k4"; then
     --speculative-num-draft-tokens 4 \
     --speculative-eagle-topk 1 \
     --speculative-suffix-enable \
+    --speculative-suffix-backend "${SUFFIX_BACKEND}" \
+    --speculative-suffix-dataset-cache-max-requests "${SUFFIX_DATASET_CACHE_MAX_REQUESTS}" \
     --speculative-dynamic-k-enable \
     --speculative-normal-draft-token-num 4 \
     --speculative-long-suffix-draft-token-num 4 \
@@ -301,6 +309,8 @@ if should_run_experiment "${DYNAMIC_EXPERIMENT_NAME}"; then
     --speculative-num-draft-tokens 4 \
     --speculative-eagle-topk 1 \
     --speculative-suffix-enable \
+    --speculative-suffix-backend "${SUFFIX_BACKEND}" \
+    --speculative-suffix-dataset-cache-max-requests "${SUFFIX_DATASET_CACHE_MAX_REQUESTS}" \
     --speculative-dynamic-k-enable \
     --speculative-normal-draft-token-num 4 \
     --speculative-long-suffix-draft-token-num "${DYNAMIC_LONG_DRAFT_TOKENS}" \

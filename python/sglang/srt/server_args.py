@@ -381,8 +381,10 @@ class ServerArgs:
     speculative_attention_mode: str = "prefill"
     speculative_moe_runner_backend: Optional[str] = None
     speculative_suffix_enable: bool = False
+    speculative_suffix_backend: str = "arctic"
     speculative_suffix_cache_max_depth: int = 64
     speculative_suffix_cache_max_requests: int = 256
+    speculative_suffix_dataset_cache_max_requests: int = 0
     speculative_suffix_max_spec_factor: float = 1.0
     speculative_suffix_max_spec_offset: float = 0.0
     speculative_suffix_min_token_prob: float = 0.1
@@ -2873,6 +2875,12 @@ class ServerArgs:
             help="Enable suffix decoding assistance (requires speculative-eagle-topk=1).",
         )
         parser.add_argument(
+            "--speculative-suffix-backend",
+            choices=["arctic", "sri_forest"],
+            default=ServerArgs.speculative_suffix_backend,
+            help="Suffix proposal cache backend. sri_forest requires manually compiled extension.",
+        )
+        parser.add_argument(
             "--speculative-suffix-cache-max-depth",
             type=int,
             default=ServerArgs.speculative_suffix_cache_max_depth,
@@ -2883,6 +2891,12 @@ class ServerArgs:
             type=int,
             default=ServerArgs.speculative_suffix_cache_max_requests,
             help="Maximum number of cached requests in the global suffix cache (-1 for unlimited).",
+        )
+        parser.add_argument(
+            "--speculative-suffix-dataset-cache-max-requests",
+            type=int,
+            default=ServerArgs.speculative_suffix_dataset_cache_max_requests,
+            help="Stable dataset-tree capacity for sri_forest suffix backend (0 disables it).",
         )
         parser.add_argument(
             "--speculative-suffix-max-spec-factor",
