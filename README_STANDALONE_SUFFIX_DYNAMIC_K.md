@@ -372,10 +372,12 @@ for three fresh-server repeats by default, across concurrency 10/20/24/30.
 `final_ab_summary.md` reports median throughput, TTFT, TPOT, and per-phase
 TP0 K=8/K=16 tier coverage.
 
-**Final alternating A/B result (2026-07-20).** Three fresh-server,
-alternating runs completed at `final_dynamic_k_ab_20260720_213528`. This is
-the final throughput validation of the deployable policy, using the same FA3,
-TP=4, 2,048-output-token workload and external concurrency 10/20/24/30.
+**Sequential continuous-cache A/B result (2026-07-20).** Three fresh-server,
+alternating policy runs completed at `final_dynamic_k_ab_20260720_213528`.
+Within each server, however, measurement order was 10 -> 20 -> 24 -> 30, so
+later phases also saw suffix entries produced by earlier measurement phases.
+This measures the throughput of a continuously serving cache, not the
+isolated effect of external concurrency.
 
 | Concurrency | Fixed K=4 median tok/s | Final policy median tok/s | Throughput uplift | Fixed / dynamic TTFT | Fixed / dynamic TPOT |
 | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -387,11 +389,9 @@ TP=4, 2,048-output-token workload and external concurrency 10/20/24/30.
 Tier counters prove the policy routed exactly as intended in every repeat:
 K=8 was zero at concurrency 10/20 and 4,485--4,633 / 6,976--7,454 selected
 rows at 24 / 30; K=16 was then dominant at 10/20 and remained only for
-high-batch tails below active batch 24. The final policy is therefore the
-throughput deployment default. It improves TPOT at every tested concurrency,
-but it increases TTFT at 10, 24, and 30 (especially under saturation), so a
-strict TTFT SLO should use the fixed-K=4 baseline or apply admission control
-rather than treating this as a latency-only optimization.
+high-batch tails below active batch 24. These results remain useful for a
+continuously serving cache, but must not be used to claim that concurrency 20
+is intrinsically the algorithmic sweet spot.
 
 Raw-run stability checks were also completed: every one of the 12
 per-concurrency A/B pairs returned all requests successfully and had positive
@@ -401,6 +401,27 @@ dynamic-policy throughput deltas. The observed three-run uplift ranges were
 P95 TTFT increased from 11,933.04 ms to 13,036.64 ms (+1.10 s, about 9.2%).
 At concurrency 30 the corresponding P95 median changed from 17,945.90 ms to
 18,422.58 ms (+0.48 s, about 2.7%).
+
+**Order-controlled final validation (2026-07-21).** To remove measurement
+order as a cache confounder, concurrency 20, 24, and 30 were each measured in
+their own three-repeat alternating A/B run at
+`order_control_20_24_30_20260721_003343`. Every isolated server received the
+same warmup and K=8 probe, then measured only one external concurrency.
+
+| Concurrency | Fixed K=4 median tok/s | Final policy median tok/s | Throughput uplift | Fixed / dynamic TTFT | Fixed / dynamic TPOT |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 20 | 353.84 | 368.01 | **+4.00%** | 3215.82 / 3334.69 ms | 53.62 / 52.61 ms |
+| 24 | 365.67 | 394.22 | **+7.81%** | 3695.05 / 3826.60 ms | 66.56 / 62.54 ms |
+| 30 | 355.22 | 371.82 | **+4.67%** | 7411.06 / 8400.01 ms | 78.75 / 77.26 ms |
+
+The policy branches were stable in every isolated repeat: at concurrency 20
+K=8 was zero and K=16 selected 1,714--1,763 rows; at 24 K=8 selected
+4,302--4,442 rows; at 30 K=8 selected 6,203--6,330 rows. This is the
+authoritative comparison for cold/equally warmed servers. It proves positive
+throughput benefit at all tested high-concurrency points, but identifies 24,
+not 20, as the strongest isolated result. The higher sequential-cache 20
+result is a valid steady-state cache outcome, rather than a pure concurrency
+effect.
 
 ### Scope and method
 
