@@ -430,6 +430,28 @@ not 20, as the strongest isolated result. The higher sequential-cache 20
 result is a valid steady-state cache outcome, rather than a pure concurrency
 effect.
 
+**Full-stack attribution result (2026-07-21).** Four cyclic fresh-server
+rounds completed at `full_stack_final_20260721_101502`. This is the complete
+same-workload comparison from target-only inference through the final policy:
+
+| Concurrency | No speculation | Standalone K=4 | Suffix static K=4 | Final dynamic K | Fixed speculation vs no-spec | Suffix fusion vs standalone | Dynamic K vs suffix static | Total dynamic vs no-spec |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | 258.02 | 368.35 | 358.80 | 382.21 | +42.76% | -2.59% | +6.52% | **+48.13%** |
+| 20 | 294.40 | 390.89 | 376.26 | 426.98 | +32.78% | -3.74% | +13.48% | **+45.03%** |
+| 24 | 309.05 | 386.35 | 372.12 | 395.73 | +25.01% | -3.68% | +6.34% | **+28.05%** |
+| 30 | 340.41 | 397.55 | 379.74 | 412.95 | +16.79% | -4.48% | +8.75% | **+21.31%** |
+
+All submitted requests completed in every one of the four repeats. The
+interpretation is important: fixed K=4 standalone speculation is the largest
+source of end-to-end gain. With the same K=4 width, ArcticInference suffix
+fusion still requires one target verify round but adds suffix-cache lookup,
+proposal selection, and override work, so it is a -2.59% to -4.48% net cost
+on this workload. Dynamic K is what converts suffix reuse into a net benefit:
+it recovers that cost and beats standalone K=4 by +3.76%, +9.23%, +2.43%, and
++3.87% at concurrency 10/20/24/30 respectively. Thus present the suffix
+component as a prerequisite for dynamic widening, not as a standalone
+throughput optimization at fixed K=4.
+
 ### Scope and method
 
 The operational comparison focuses on concurrent request counts **10, 20, and
