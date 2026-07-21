@@ -372,6 +372,13 @@ for three fresh-server repeats by default, across concurrency 10/20/24/30.
 `final_ab_summary.md` reports median throughput, TTFT, TPOT, and per-phase
 TP0 K=8/K=16 tier coverage.
 
+For full end-to-end attribution, use
+`scripts/run_full_stack_final_policy_validation.sh`. It cyclically compares
+target-only inference, fixed Standalone K=4, ArcticInference suffix fusion
+with static K=4, and the final dynamic K=4/16/8 policy. Its
+`full_stack_summary.md` separates fixed-speculation, suffix-fusion,
+dynamic-K, and total gains.
+
 **Sequential continuous-cache A/B result (2026-07-20).** Three fresh-server,
 alternating policy runs completed at `final_dynamic_k_ab_20260720_213528`.
 Within each server, however, measurement order was 10 -> 20 -> 24 -> 30, so
