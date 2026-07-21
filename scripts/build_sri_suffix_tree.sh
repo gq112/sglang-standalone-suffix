@@ -10,7 +10,7 @@ python -c "import pybind11" || {
     echo "pybind11 is required; install it in the active environment first." >&2
     exit 1
 }
-python "${TREE_DIR}/setup.py" build_ext --inplace
+(cd "${TREE_DIR}" && python setup.py build_ext --inplace)
 PYTHONPATH="${SGLANG_DIR}/python${PYTHONPATH:+:${PYTHONPATH}}" python - <<'PY'
 from sglang.srt.speculative.sri_forest._sglang_sri_suffix_tree import SuffixTree
 
